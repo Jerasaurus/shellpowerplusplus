@@ -1123,7 +1123,7 @@ void InitAutoLayout(AppState* app)
     app->auto_layout.preview_surface = false;
     app->auto_layout.use_height_constraint = true;  // Height constraint enabled by default
     app->auto_layout.auto_detect_height = true;    // Auto-detect optimal height range
-    app->auto_layout.height_tolerance = 0.2f;      // 10cm vertical tolerance
+    app->auto_layout.height_tolerance = 0.3f;      // 10cm vertical tolerance
     app->auto_layout.min_height = 0.0f;
     app->auto_layout.max_height = 10.0f;
     app->auto_layout.use_grid_layout = true;       // Grid layout enabled by default
@@ -1382,16 +1382,13 @@ int RunAutoLayout(AppState* app)
         float maxX = app->mesh_bounds.max.x;
         float minZ = app->mesh_bounds.min.z;
         float maxZ = app->mesh_bounds.max.z;
-
         // Note: height constraint is applied later in IsValidSurface()
 
         // Calculate grid dimensions
         int gridX = (int)((maxX - minX) / grid_spacing) + 1;
         int gridZ = (int)((maxZ - minZ) / grid_spacing) + 1;
         int totalGridPoints = gridX * gridZ;
-
         SetStatus(app, "Auto-layout: scanning %dx%d grid...", gridX, gridZ);
-
         // Iterate over grid points
         int processed = 0;
         for (int gx = 0; gx < gridX && candidate_count < MAX_CANDIDATES; gx++)
