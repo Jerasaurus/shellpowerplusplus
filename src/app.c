@@ -1199,7 +1199,7 @@ float CalculateOcclusionScore(AppState* app, Vector3 position, Vector3 normal)
     // Save current simulation settings
     SimSettings original = app->sim_settings;
 
-    int heading_samples = 36;
+    int heading_samples = 10;
 
     // Sample multiple vehicle headings (0 to 360 degrees)
     for (int heading_idx = 0; heading_idx < heading_samples; heading_idx++)
