@@ -562,33 +562,41 @@ int DrawCellPanel(AppState* app, int x, int y, int w)
 
     if (app->auto_layout.use_height_constraint)
     {
-        // Update height range based on mesh bounds when first enabled
-        static bool height_initialized = false;
-        if (!height_initialized && app->mesh_loaded)
-        {
-            app->auto_layout.min_height = app->mesh_bounds.min.y;
-            app->auto_layout.max_height = app->mesh_bounds.max.y;
-            height_initialized = true;
-        }
-
-        float y_min_bound = app->mesh_loaded ? app->mesh_bounds.min.y - 0.1f : 0.0f;
-        float y_max_bound = app->mesh_loaded ? app->mesh_bounds.max.y + 0.1f : 10.0f;
-
-        GuiLabel((Rectangle){x, y, 60, 20}, "Min height:");
-        GuiSlider((Rectangle){x + 65, y, w - 110, 20}, NULL, NULL,
-            &app->auto_layout.min_height, y_min_bound, y_max_bound);
-        char minHText[16];
-        snprintf(minHText, sizeof(minHText), "%.2f", app->auto_layout.min_height);
-        GuiLabel((Rectangle){x + w - 40, y, 40, 20}, minHText);
+        // Auto-detect checkbox
+        GuiCheckBox((Rectangle){x, y, 20, 20}, "Auto-detect shell top", &app->auto_layout.auto_detect_height);
         y += 22;
 
-        GuiLabel((Rectangle){x, y, 60, 20}, "Max height:");
-        GuiSlider((Rectangle){x + 65, y, w - 110, 20}, NULL, NULL,
-            &app->auto_layout.max_height, y_min_bound, y_max_bound);
-        char maxHText[16];
-        snprintf(maxHText, sizeof(maxHText), "%.2f", app->auto_layout.max_height);
-        GuiLabel((Rectangle){x + w - 40, y, 40, 20}, maxHText);
-        y += 24;
+        if (!app->auto_layout.auto_detect_height)
+        {
+            // Manual height range controls
+            float z_min_bound = app->mesh_loaded ? app->mesh_bounds.min.z - 0.1f : 0.0f;
+            float z_max_bound = app->mesh_loaded ? app->mesh_bounds.max.z + 0.1f : 10.0f;
+
+            GuiLabel((Rectangle){x, y, 60, 20}, "Min height:");
+            GuiSlider((Rectangle){x + 65, y, w - 110, 20}, NULL, NULL,
+                &app->auto_layout.min_height, z_min_bound, z_max_bound);
+            char minHText[16];
+            snprintf(minHText, sizeof(minHText), "%.2f", app->auto_layout.min_height);
+            GuiLabel((Rectangle){x + w - 40, y, 40, 20}, minHText);
+            y += 22;
+
+            GuiLabel((Rectangle){x, y, 60, 20}, "Max height:");
+            GuiSlider((Rectangle){x + 65, y, w - 110, 20}, NULL, NULL,
+                &app->auto_layout.max_height, z_min_bound, z_max_bound);
+            char maxHText[16];
+            snprintf(maxHText, sizeof(maxHText), "%.2f", app->auto_layout.max_height);
+            GuiLabel((Rectangle){x + w - 40, y, 40, 20}, maxHText);
+            y += 24;
+        }
+        else
+        {
+            // Show current detected range (read-only)
+            char rangeText[64];
+            snprintf(rangeText, sizeof(rangeText), "Range: %.2f - %.2f m",
+                app->auto_layout.min_height, app->auto_layout.max_height);
+            GuiLabel((Rectangle){x, y, w, 20}, rangeText);
+            y += 24;
+        }
     }
 
     y += 4;
