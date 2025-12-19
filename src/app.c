@@ -1807,14 +1807,16 @@ Vector3 CalculateSunDirection(SimSettings* s, float* out_alt, float* out_az)
     int doy = (s->month - 1) * 30 + s->day;
     doy = (doy < 1) ? 1 : (doy > 365) ? 365 : doy;
 
-    // Equation of time and declination (simplified)
-    float gamma = 2.0f * PI / 365.0f * (doy - 1 + (s->hour - 12.0f) / 24.0f);
+    // Fractional year (gamma) for equation of time and declination
+    float gamma = 2.0f * PI / 365.0f * (doy - 1);
 
+    // Equation of time (in minutes) - accounts for Earth's elliptical orbit
     float eqtime = 229.18f * (0.000075f + 0.001868f * cosf(gamma)
         - 0.032077f * sinf(gamma)
         - 0.014615f * cosf(2 * gamma)
         - 0.040849f * sinf(2 * gamma));
 
+    // Solar declination (in radians)
     float decl = 0.006918f - 0.399912f * cosf(gamma)
         + 0.070257f * sinf(gamma)
         - 0.006758f * cosf(2 * gamma)
@@ -1822,20 +1824,30 @@ Vector3 CalculateSunDirection(SimSettings* s, float* out_alt, float* out_az)
         - 0.002697f * cosf(3 * gamma)
         + 0.00148f * sinf(3 * gamma);
 
-    // Hour angle
-    float time_offset = eqtime + 4.0f * s->longitude;
-    float tst = s->hour * 60.0f + time_offset;
-    float ha = (tst / 4.0f) - 180.0f;
+    // Calculate timezone offset from longitude (approximate standard timezone)
+    // Each 15 degrees of longitude = 1 hour timezone difference
+    // This assumes standard time (not daylight saving)
+    float timezone_offset = roundf(s->longitude / 15.0f);  // hours from UTC
+
+    // Convert local clock time to solar time
+    // Solar time = clock time + 4*(longitude - timezone*15) + equation_of_time
+    // The 4 is because Earth rotates 1 degree every 4 minutes
+    float longitude_correction = 4.0f * (s->longitude - timezone_offset * 15.0f); // minutes
+    float solar_time_minutes = s->hour * 60.0f + longitude_correction + eqtime;
+
+    // Hour angle: solar noon is 0 degrees, morning is negative, afternoon is positive
+    // At solar noon (12:00 solar time), hour angle = 0
+    float ha = (solar_time_minutes / 4.0f) - 180.0f;  // degrees
     float ha_rad = ha * DEG2RAD;
 
-    // Solar zenith and altitude
+    // Solar zenith angle calculation
     float cos_zen = sinf(lat) * sinf(decl) + cosf(lat) * cosf(decl) * cosf(ha_rad);
     cos_zen = Clampf(cos_zen, -1.0f, 1.0f);
 
     float zenith = acosf(cos_zen);
     float altitude = 90.0f - zenith * RAD2DEG;
 
-    // Azimuth calculation (more robust)
+    // Azimuth calculation
     float sin_zen = sinf(zenith);
     float azimuth = 0.0f;
 
@@ -1848,18 +1860,17 @@ Vector3 CalculateSunDirection(SimSettings* s, float* out_alt, float* out_az)
     }
     else
     {
-        // Sun is directly overhead or below, azimuth is undefined
         azimuth = 180.0f;
     }
 
     if (out_alt) *out_alt = altitude;
     if (out_az) *out_az = azimuth;
 
-    // Convert to direction vector (toward sun)
-    // Only return valid direction if sun is above horizon
+    // Return direction vector toward the sun
+    // If sun is below horizon, return downward vector
     if (altitude <= 0)
     {
-        return (Vector3){0, -1, 0}; // Sun below horizon
+        return (Vector3){0, -1, 0};
     }
 
     float alt_rad = altitude * DEG2RAD;
@@ -1873,7 +1884,6 @@ Vector3 CalculateSunDirection(SimSettings* s, float* out_alt, float* out_az)
 
     return Vector3Normalize(dir);
 }
-
 bool CheckCellShading(AppState* app, SolarCell* cell, Vector3 sun_dir)
 {
     if (!app->mesh_loaded) return false;
