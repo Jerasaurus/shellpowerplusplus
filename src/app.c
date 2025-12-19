@@ -486,7 +486,19 @@ Vector3 CellGetWorldNormal(AppState* app, SolarCell* cell)
     Vector3 worldNormal = Vector3Transform(cell->local_normal, normalTransform);
     return Vector3Normalize(worldNormal);
 }
+// Get world tangent of a cell (transforms and normalizes)
+Vector3 CellGetWorldTangent(AppState* app, SolarCell* cell)
+{
+    Matrix transform = app->vehicle_model.transform;
+    // Zero out translation for direction transformation
+    Matrix dirTransform = transform;
+    dirTransform.m12 = 0;
+    dirTransform.m13 = 0;
+    dirTransform.m14 = 0;
 
+    Vector3 worldTangent = Vector3Transform(cell->local_tangent, dirTransform);
+    return Vector3Normalize(worldTangent);
+}
 int PlaceCell(AppState* app, Vector3 world_position, Vector3 world_normal)
 {
     if (app->cell_count >= MAX_CELLS)
@@ -517,20 +529,34 @@ int PlaceCell(AppState* app, Vector3 world_position, Vector3 world_normal)
         }
     }
 
+    // Compute tangent (right vector) in world space
+    // Use a consistent reference direction, but handle the degenerate case
+    Vector3 world_tangent;
+    Vector3 ref = {0, 0, 1};
+    world_tangent = Vector3CrossProduct(ref, world_normal);
+    if (Vector3Length(world_tangent) < 0.001f)
+    {
+        ref = (Vector3){1, 0, 0};
+        world_tangent = Vector3CrossProduct(ref, world_normal);
+    }
+    world_tangent = Vector3Normalize(world_tangent);
+
     // Convert world coords to local (inverse of mesh transform)
     Matrix invTransform = MatrixInvert(app->vehicle_model.transform);
     Vector3 local_position = Vector3Transform(world_position, invTransform);
 
-    // Transform normal to local space
+    // Transform normal and tangent to local space
     Matrix normalInvTransform = invTransform;
     normalInvTransform.m12 = 0; normalInvTransform.m13 = 0; normalInvTransform.m14 = 0;
     Vector3 local_normal = Vector3Normalize(Vector3Transform(world_normal, normalInvTransform));
+    Vector3 local_tangent = Vector3Normalize(Vector3Transform(world_tangent, normalInvTransform));
 
     // Create cell with local coordinates
     SolarCell* cell = &app->cells[app->cell_count];
     cell->id = app->next_cell_id++;
     cell->local_position = local_position;
     cell->local_normal = local_normal;
+    cell->local_tangent = local_tangent;
     cell->string_id = -1;
     cell->order_in_string = -1;
     cell->has_bypass_diode = false;
@@ -542,7 +568,6 @@ int PlaceCell(AppState* app, Vector3 world_position, Vector3 world_normal)
     SetStatus(app, "Placed cell #%d", cell->id);
     return cell->id;
 }
-
 void RemoveCell(AppState* app, int cell_id)
 {
     int idx = -1;
@@ -1171,6 +1196,7 @@ float CalculateOcclusionScore(AppState* app, Vector3 position, Vector3 normal)
 
     // Save current simulation settings
     SimSettings original = app->sim_settings;
+    // Vector3 ogRotation = app->mesh_rotation.
 
     // Sample throughout the day
     for (int hour_idx = 0; hour_idx < app->auto_layout.time_samples; hour_idx++)
@@ -2123,14 +2149,11 @@ void DrawCell(AppState* app, SolarCell* cell)
     Vector3 worldNormal = CellGetWorldNormal(app, cell);
     Vector3 pos = Vector3Add(worldPos, Vector3Scale(worldNormal, CELL_SURFACE_OFFSET));
 
-    // Calculate cell orientation
-    Vector3 up = worldNormal;
-    Vector3 right = Vector3Normalize(Vector3CrossProduct((Vector3){0, 0, 1}, up));
-    if (Vector3Length(right) < 0.001f)
-    {
-        right = Vector3Normalize(Vector3CrossProduct((Vector3){1, 0, 0}, up));
-    }
-    Vector3 forward = Vector3CrossProduct(up, right);
+    // Get the stored tangent transformed to world space
+    Vector3 right = CellGetWorldTangent(app, cell);
+
+    // Forward is perpendicular to both normal and right
+    Vector3 forward = Vector3CrossProduct(worldNormal, right);
 
     // Scale to cell size
     right = Vector3Scale(right, preset->width / 2);
@@ -2153,7 +2176,6 @@ void DrawCell(AppState* app, SolarCell* cell)
     DrawLine3D(p3, p4, outline);
     DrawLine3D(p4, p1, outline);
 }
-
 void DrawWiring(AppState* app)
 {
     for (int s = 0; s < app->string_count; s++)
