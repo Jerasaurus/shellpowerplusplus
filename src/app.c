@@ -127,7 +127,7 @@ void AppInit(AppState* app)
 
     // Mesh
     app->mesh_loaded = false;
-    app->mesh_scale = 0.001f;
+    app->mesh_scale = 0.01f;
     app->mesh_rotation = (Vector3){0, 0, 0};
 
     // Cells
@@ -251,8 +251,8 @@ void CameraUpdate(CameraController* cam, AppState* app)
         else
         {
             // Orbit in perspective mode
-            cam->azimuth += delta.x * 0.5f;
-            cam->elevation = Clampf(cam->elevation - delta.y * 0.5f, -89.0f, 89.0f);
+            cam->azimuth -= delta.x * 0.5f;
+            cam->elevation = Clampf(cam->elevation + delta.y * 0.5f, -89.0f, 89.0f);
         }
     }
 
@@ -1068,8 +1068,7 @@ int PlaceModule(AppState* app, int module_index, Vector3 world_position, Vector3
 {
     if (module_index < 0 || module_index >= app->module_count) return 0;
 
-    CellModule* mod = &app->modules[module_index];
-    int placed = 0;
+    CellModule* mod = &app->modules[module_index];    int placed = 0;
 
     // Calculate rotation to align module with surface normal
     // For simplicity, we just offset cells - proper rotation would need more math
@@ -1116,14 +1115,16 @@ void DeleteModule(AppState* app, int module_index)
 void InitAutoLayout(AppState* app)
 {
     app->auto_layout.target_area = 1.0f;           // 1 m^2 default
-    app->auto_layout.min_normal_angle = 0.0f;      // Flat surfaces OK
-    app->auto_layout.max_normal_angle = 45.0f;     // Up to 45 degrees from horizontal
+    app->auto_layout.min_normal_angle = 62.0f;      // Flat surfaces OK
+    app->auto_layout.max_normal_angle = 90.0f;     // Up to 45 degrees from horizontal
     app->auto_layout.surface_threshold = 30.0f;    // Adjacent triangles within 30 degrees
     app->auto_layout.time_samples = 12;            // Sample every 2 hours (6am-6pm)
     app->auto_layout.optimize_occlusion = true;
     app->auto_layout.preview_surface = false;
-    app->auto_layout.use_height_constraint = false; // Height constraint disabled by default
-    app->auto_layout.min_height = 0.0f;            // Default range covers most vehicles
+    app->auto_layout.use_height_constraint = true;  // Height constraint enabled by default
+    app->auto_layout.auto_detect_height = true;    // Auto-detect optimal height range
+    app->auto_layout.height_tolerance = 0.2f;      // 10cm vertical tolerance
+    app->auto_layout.min_height = 0.0f;
     app->auto_layout.max_height = 10.0f;
     app->auto_layout.use_grid_layout = true;       // Grid layout enabled by default
     app->auto_layout.grid_spacing = 0.0f;          // 0 = auto based on cell size
@@ -1214,6 +1215,119 @@ float CalculateOcclusionScore(AppState* app, Vector3 position, Vector3 normal)
 
 // Structure to hold candidate positions during auto-layout
 #define MAX_CANDIDATES 10000
+#define MAX_HEIGHT_SAMPLES 5000
+
+// Find the optimal height range that contains the most valid upward-facing surfaces
+// within the specified tolerance (e.g., 10cm vertical band)
+void AutoDetectHeightRange(AppState* app)
+{
+    if (!app->mesh_loaded) return;
+
+    Mesh* mesh = &app->vehicle_mesh;
+    Matrix transform = app->vehicle_model.transform;
+    float* vertices = mesh->vertices;
+    unsigned short* indices = mesh->indices;
+    int triangleCount = mesh->triangleCount;
+
+    float tolerance = app->auto_layout.height_tolerance;
+
+    // Collect Z heights of valid upward-facing surfaces
+    float* heights = (float*)malloc(MAX_HEIGHT_SAMPLES * sizeof(float));
+    int heightCount = 0;
+
+    int step = (triangleCount > MAX_HEIGHT_SAMPLES) ? triangleCount / MAX_HEIGHT_SAMPLES : 1;
+
+    for (int i = 0; i < triangleCount && heightCount < MAX_HEIGHT_SAMPLES; i += step)
+    {
+        int idx0, idx1, idx2;
+        if (indices)
+        {
+            idx0 = indices[i * 3 + 0];
+            idx1 = indices[i * 3 + 1];
+            idx2 = indices[i * 3 + 2];
+        }
+        else
+        {
+            idx0 = i * 3 + 0;
+            idx1 = i * 3 + 1;
+            idx2 = i * 3 + 2;
+        }
+
+        Vector3 v0 = {vertices[idx0 * 3], vertices[idx0 * 3 + 1], vertices[idx0 * 3 + 2]};
+        Vector3 v1 = {vertices[idx1 * 3], vertices[idx1 * 3 + 1], vertices[idx1 * 3 + 2]};
+        Vector3 v2 = {vertices[idx2 * 3], vertices[idx2 * 3 + 1], vertices[idx2 * 3 + 2]};
+
+        v0 = Vector3Transform(v0, transform);
+        v1 = Vector3Transform(v1, transform);
+        v2 = Vector3Transform(v2, transform);
+
+        // Calculate normal
+        Vector3 edge1 = Vector3Subtract(v1, v0);
+        Vector3 edge2 = Vector3Subtract(v2, v0);
+        Vector3 normal = Vector3Normalize(Vector3CrossProduct(edge1, edge2));
+
+        // Only consider upward-facing surfaces
+        if (normal.y < MIN_UPWARD_NORMAL) continue;
+
+        // Triangle center height
+        float center_y = (v0.y + v1.y + v2.y) / 3.0f;
+        heights[heightCount++] = center_y;
+    }
+
+    if (heightCount == 0)
+    {
+        free(heights);
+        return;
+    }
+
+    // Sort heights (simple bubble sort for now)
+    for (int i = 0; i < heightCount - 1; i++)
+    {
+        for (int j = i + 1; j < heightCount; j++)
+        {
+            if (heights[j] < heights[i])
+            {
+                float temp = heights[i];
+                heights[i] = heights[j];
+                heights[j] = temp;
+            }
+        }
+    }
+
+    // Sliding window to find the height range with most samples
+    int bestCount = 0;
+    float bestMinY = heights[0];
+    float bestMaxY = heights[0] + tolerance;
+
+    for (int i = 0; i < heightCount; i++)
+    {
+        float windowMin = heights[i];
+        float windowMax = windowMin + tolerance;
+
+        // Count samples in this window
+        int count = 0;
+        for (int j = i; j < heightCount && heights[j] <= windowMax; j++)
+        {
+            count++;
+        }
+
+        if (count > bestCount)
+        {
+            bestCount = count;
+            bestMinY = windowMin;
+            bestMaxY = windowMax;
+        }
+    }
+
+    // Set the detected height range
+    app->auto_layout.min_height = bestMinY;
+    app->auto_layout.max_height = bestMaxY;
+
+    free(heights);
+
+    SetStatus(app, "Auto-detected height: %.2f - %.2f m (%d surfaces)",
+        bestMinY, bestMaxY, bestCount);
+}
 
 int RunAutoLayout(AppState* app)
 {
@@ -1221,6 +1335,12 @@ int RunAutoLayout(AppState* app)
     {
         SetStatus(app, "No mesh loaded");
         return 0;
+    }
+
+    // Auto-detect optimal height range if enabled
+    if (app->auto_layout.use_height_constraint && app->auto_layout.auto_detect_height)
+    {
+        AutoDetectHeightRange(app);
     }
 
     app->auto_layout_running = true;
@@ -1851,10 +1971,10 @@ void RunSimulation(AppState* app)
 void AppUpdate(AppState* app)
 {
     // Keyboard shortcuts
-    if (IsKeyPressed(KEY_ONE)) app->mode = MODE_IMPORT;
-    if (IsKeyPressed(KEY_TWO)) app->mode = MODE_CELL_PLACEMENT;
-    if (IsKeyPressed(KEY_THREE)) app->mode = MODE_WIRING;
-    if (IsKeyPressed(KEY_FOUR)) app->mode = MODE_SIMULATION;
+    // if (IsKeyPressed(KEY_ONE)) app->mode = MODE_IMPORT;
+    // if (IsKeyPressed(KEY_TWO)) app->mode = MODE_CELL_PLACEMENT;
+    // if (IsKeyPressed(KEY_THREE)) app->mode = MODE_WIRING;
+    // if (IsKeyPressed(KEY_FOUR)) app->mode = MODE_SIMULATION;
 
     if (IsKeyPressed(KEY_T))
     {
@@ -2273,8 +2393,20 @@ void AppDraw(AppState* app)
     // Draw grid
     DrawGrid(20, 0.5f);
 
+    // Draw colored coordinate axes at origin
+    float axisLength = 1.0f;
+    // X axis - Red
+    DrawLine3D((Vector3){0, 0, 0}, (Vector3){axisLength, 0, 0}, RED);
+    DrawCylinderEx((Vector3){axisLength, 0, 0}, (Vector3){axisLength + 0.1f, 0, 0}, 0.03f, 0.0f, 8, RED);
+    // Y axis - Green (UP in raylib)
+    DrawLine3D((Vector3){0, 0, 0}, (Vector3){0, axisLength, 0}, GREEN);
+    DrawCylinderEx((Vector3){0, axisLength, 0}, (Vector3){0, axisLength + 0.1f, 0}, 0.03f, 0.0f, 8, GREEN);
+    // Z axis - Blue
+    DrawLine3D((Vector3){0, 0, 0}, (Vector3){0, 0, axisLength}, BLUE);
+    DrawCylinderEx((Vector3){0, 0, axisLength}, (Vector3){0, 0, axisLength + 0.1f}, 0.03f, 0.0f, 8, BLUE);
+
     // Draw mesh shadow on ground (before mesh so it's behind)
-    DrawMeshShadow(app);
+    // DrawMeshShadow(app);
 
     // Draw mesh
     if (app->mesh_loaded)
@@ -2283,7 +2415,7 @@ void AppDraw(AppState* app)
         DrawModelWires(app->vehicle_model, (Vector3){0, 0, 0}, 1.0f, (Color){100, 100, 100, 50});
 
         // Draw shadows on the mesh surface (occluded areas)
-        DrawMeshShadowsOnSurface(app);
+        // DrawMeshShadowsOnSurface(app);
 
         // Draw auto-layout surface preview
         DrawAutoLayoutPreview(app);
@@ -2303,6 +2435,19 @@ void AppDraw(AppState* app)
 
     EndMode3D();
     EndScissorMode();
+
+    // Draw coordinate axes legend in bottom-right corner of 3D view
+    int legendX = app->screen_width - 90;
+    int legendY = viewH - 70;
+    DrawRectangle(legendX - 5, legendY - 5, 85, 65, (Color){240, 240, 240, 200});
+    DrawRectangleLines(legendX - 5, legendY - 5, 85, 65, DARKGRAY);
+    DrawText("Axes:", legendX, legendY, 14, DARKGRAY);
+    DrawRectangle(legendX, legendY + 16, 12, 12, RED);
+    DrawText("X", legendX + 16, legendY + 15, 14, DARKGRAY);
+    DrawRectangle(legendX, legendY + 30, 12, 12, GREEN);
+    DrawText("Y (up)", legendX + 16, legendY + 29, 14, DARKGRAY);
+    DrawRectangle(legendX, legendY + 44, 12, 12, BLUE);
+    DrawText("Z", legendX + 16, legendY + 43, 14, DARKGRAY);
 
     // Draw GUI
     DrawGUI(app);

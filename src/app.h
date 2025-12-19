@@ -114,6 +114,8 @@ typedef struct {
     bool optimize_occlusion;    // Whether to optimize for minimal occlusion
     bool preview_surface;       // Show surface selection preview
     bool use_height_constraint; // Enable height constraint (to exclude canopy)
+    bool auto_detect_height;    // Automatically find optimal height range
+    float height_tolerance;     // Vertical tolerance for auto-detect (default 0.1m)
     float min_height;           // Minimum height for cell placement
     float max_height;           // Maximum height for cell placement
     bool use_grid_layout;       // Use grid-based layout instead of mesh triangles
