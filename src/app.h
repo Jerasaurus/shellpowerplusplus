@@ -60,6 +60,7 @@ typedef struct {
 typedef struct {
     int id;
     Vector3 local_position;  // Position in mesh-local coordinates (before transform)
+    Vector3 local_tangent;
     Vector3 local_normal;    // Normal in mesh-local coordinates
     int string_id;          // -1 = unwired
     int order_in_string;    // Order within string for series connection
