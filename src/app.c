@@ -1187,6 +1187,8 @@ bool IsValidSurface(AppState* app, Vector3 position, Vector3 normal)
 }
 
 // Calculate occlusion score for a position (0 = never occluded, 1 = always occluded)
+// Calculate occlusion score for a position (0 = never occluded, 1 = always occluded)
+// Now samples multiple vehicle headings to simulate driving in different directions
 float CalculateOcclusionScore(AppState* app, Vector3 position, Vector3 normal)
 {
     if (!app->mesh_loaded) return 0.0f;
@@ -1196,40 +1198,57 @@ float CalculateOcclusionScore(AppState* app, Vector3 position, Vector3 normal)
 
     // Save current simulation settings
     SimSettings original = app->sim_settings;
-    // Vector3 ogRotation = app->mesh_rotation.
 
-    // Sample throughout the day
-    for (int hour_idx = 0; hour_idx < app->auto_layout.time_samples; hour_idx++)
+    int heading_samples = 36;
+
+    // Sample multiple vehicle headings (0 to 360 degrees)
+    for (int heading_idx = 0; heading_idx < heading_samples; heading_idx++)
     {
-        // Sample from 6am to 6pm
-        float hour = 6.0f + (12.0f * hour_idx / (app->auto_layout.time_samples - 1));
-        app->sim_settings.hour = hour;
+        float heading_angle = (360.0f * heading_idx) / heading_samples;
+        float heading_rad = heading_angle * DEG2RAD;
 
-        float altitude, azimuth;
-        Vector3 sun_dir = CalculateSunDirection(&app->sim_settings, &altitude, &azimuth);
-
-        // Skip if sun is below horizon
-        if (altitude <= 0) continue;
-
-        total_samples++;
-
-        // Check if cell would face the sun (cosine > 0)
-        float facing = Vector3DotProduct(normal, sun_dir);
-        if (facing <= 0)
+        // Sample throughout the day
+        for (int hour_idx = 0; hour_idx < app->auto_layout.time_samples; hour_idx++)
         {
-            occluded_count++; // Not facing sun counts as "occluded"
-            continue;
-        }
+            // Sample from 6am to 6pm
+            float hour = 6.0f + (12.0f * hour_idx / (app->auto_layout.time_samples - 1));
+            app->sim_settings.hour = hour;
 
-        // Cast ray toward sun to check for occlusion
-        Ray ray;
-        ray.position = Vector3Add(position, Vector3Scale(normal, 0.01f));
-        ray.direction = sun_dir;
+            float altitude, azimuth;
+            Vector3 sun_dir = CalculateSunDirection(&app->sim_settings, &altitude, &azimuth);
 
-        RayCollision hit = GetRayCollisionMesh(ray, app->vehicle_mesh, app->vehicle_model.transform);
-        if (hit.hit && hit.distance > 0.02f)
-        {
-            occluded_count++;
+            // Skip if sun is below horizon
+            if (altitude <= 0) continue;
+
+            total_samples++;
+
+            // Rotate sun direction to simulate vehicle heading change
+            // This is equivalent to rotating the vehicle in the opposite direction
+            // We rotate sun_dir around the Y axis by -heading_angle
+            Vector3 rotated_sun_dir = {
+                sun_dir.x * cosf(-heading_rad) - sun_dir.z * sinf(-heading_rad),
+                sun_dir.y,
+                sun_dir.x * sinf(-heading_rad) + sun_dir.z * cosf(-heading_rad)
+            };
+
+            // Check if cell would face the sun (cosine > 0)
+            float facing = Vector3DotProduct(normal, rotated_sun_dir);
+            if (facing <= 0)
+            {
+                occluded_count++; // Not facing sun counts as "occluded"
+                continue;
+            }
+
+            // Cast ray toward sun to check for occlusion
+            Ray ray;
+            ray.position = Vector3Add(position, Vector3Scale(normal, 0.01f));
+            ray.direction = rotated_sun_dir;
+
+            RayCollision hit = GetRayCollisionMesh(ray, app->vehicle_mesh, app->vehicle_model.transform);
+            if (hit.hit && hit.distance > 0.02f)
+            {
+                occluded_count++;
+            }
         }
     }
 
@@ -1238,7 +1257,6 @@ float CalculateOcclusionScore(AppState* app, Vector3 position, Vector3 normal)
 
     return (total_samples > 0) ? (float)occluded_count / total_samples : 1.0f;
 }
-
 // Structure to hold candidate positions during auto-layout
 #define MAX_CANDIDATES 10000
 #define MAX_HEIGHT_SAMPLES 5000
