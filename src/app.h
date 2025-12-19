@@ -113,9 +113,9 @@ typedef struct {
     int time_samples;           // Number of time samples for occlusion scoring
     bool optimize_occlusion;    // Whether to optimize for minimal occlusion
     bool preview_surface;       // Show surface selection preview
-    bool use_z_constraint;      // Enable Z-axis constraint (to exclude canopy)
-    float min_z;                // Minimum Z coordinate for cell placement
-    float max_z;                // Maximum Z coordinate for cell placement
+    bool use_height_constraint; // Enable height constraint (to exclude canopy)
+    float min_height;           // Minimum height for cell placement
+    float max_height;           // Maximum height for cell placement
     bool use_grid_layout;       // Use grid-based layout instead of mesh triangles
     float grid_spacing;         // Grid spacing for layout (0 = auto based on cell size)
 } AutoLayoutSettings;

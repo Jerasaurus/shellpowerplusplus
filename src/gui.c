@@ -556,38 +556,38 @@ int DrawCellPanel(AppState* app, int x, int y, int w)
     GuiCheckBox((Rectangle){x, y, 20, 20}, "Use grid layout", &app->auto_layout.use_grid_layout);
     y += 24;
 
-    // Z constraint section
-    GuiCheckBox((Rectangle){x, y, 20, 20}, "Limit Z range (exclude canopy)", &app->auto_layout.use_z_constraint);
+    // Height constraint section
+    GuiCheckBox((Rectangle){x, y, 20, 20}, "Limit height (exclude canopy)", &app->auto_layout.use_height_constraint);
     y += 22;
 
-    if (app->auto_layout.use_z_constraint)
+    if (app->auto_layout.use_height_constraint)
     {
-        // Update Z range based on mesh bounds when first enabled
-        static bool z_initialized = false;
-        if (!z_initialized && app->mesh_loaded)
+        // Update height range based on mesh bounds when first enabled
+        static bool height_initialized = false;
+        if (!height_initialized && app->mesh_loaded)
         {
-            app->auto_layout.min_z = app->mesh_bounds.min.z;
-            app->auto_layout.max_z = app->mesh_bounds.max.z;
-            z_initialized = true;
+            app->auto_layout.min_height = app->mesh_bounds.min.y;
+            app->auto_layout.max_height = app->mesh_bounds.max.y;
+            height_initialized = true;
         }
 
-        float z_min_bound = app->mesh_loaded ? app->mesh_bounds.min.z - 1.0f : -10.0f;
-        float z_max_bound = app->mesh_loaded ? app->mesh_bounds.max.z + 1.0f : 10.0f;
+        float y_min_bound = app->mesh_loaded ? app->mesh_bounds.min.y - 0.1f : 0.0f;
+        float y_max_bound = app->mesh_loaded ? app->mesh_bounds.max.y + 0.1f : 10.0f;
 
-        GuiLabel((Rectangle){x, y, 40, 20}, "Min Z:");
-        GuiSlider((Rectangle){x + 45, y, w - 90, 20}, NULL, NULL,
-            &app->auto_layout.min_z, z_min_bound, z_max_bound);
-        char minZText[16];
-        snprintf(minZText, sizeof(minZText), "%.2f", app->auto_layout.min_z);
-        GuiLabel((Rectangle){x + w - 40, y, 40, 20}, minZText);
+        GuiLabel((Rectangle){x, y, 60, 20}, "Min height:");
+        GuiSlider((Rectangle){x + 65, y, w - 110, 20}, NULL, NULL,
+            &app->auto_layout.min_height, y_min_bound, y_max_bound);
+        char minHText[16];
+        snprintf(minHText, sizeof(minHText), "%.2f", app->auto_layout.min_height);
+        GuiLabel((Rectangle){x + w - 40, y, 40, 20}, minHText);
         y += 22;
 
-        GuiLabel((Rectangle){x, y, 40, 20}, "Max Z:");
-        GuiSlider((Rectangle){x + 45, y, w - 90, 20}, NULL, NULL,
-            &app->auto_layout.max_z, z_min_bound, z_max_bound);
-        char maxZText[16];
-        snprintf(maxZText, sizeof(maxZText), "%.2f", app->auto_layout.max_z);
-        GuiLabel((Rectangle){x + w - 40, y, 40, 20}, maxZText);
+        GuiLabel((Rectangle){x, y, 60, 20}, "Max height:");
+        GuiSlider((Rectangle){x + 65, y, w - 110, 20}, NULL, NULL,
+            &app->auto_layout.max_height, y_min_bound, y_max_bound);
+        char maxHText[16];
+        snprintf(maxHText, sizeof(maxHText), "%.2f", app->auto_layout.max_height);
+        GuiLabel((Rectangle){x + w - 40, y, 40, 20}, maxHText);
         y += 24;
     }
 

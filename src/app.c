@@ -1122,9 +1122,9 @@ void InitAutoLayout(AppState* app)
     app->auto_layout.time_samples = 12;            // Sample every 2 hours (6am-6pm)
     app->auto_layout.optimize_occlusion = true;
     app->auto_layout.preview_surface = false;
-    app->auto_layout.use_z_constraint = false;     // Z constraint disabled by default
-    app->auto_layout.min_z = -10.0f;               // Default range covers most vehicles
-    app->auto_layout.max_z = 10.0f;
+    app->auto_layout.use_height_constraint = false; // Height constraint disabled by default
+    app->auto_layout.min_height = 0.0f;            // Default range covers most vehicles
+    app->auto_layout.max_height = 10.0f;
     app->auto_layout.use_grid_layout = true;       // Grid layout enabled by default
     app->auto_layout.grid_spacing = 0.0f;          // 0 = auto based on cell size
     app->auto_layout_running = false;
@@ -1148,10 +1148,10 @@ bool IsValidSurface(AppState* app, Vector3 position, Vector3 normal)
     // Position must be above ground
     if (position.y < 0.01f) return false;
 
-    // Check Z constraint if enabled (to exclude canopy or other areas)
-    if (app->auto_layout.use_z_constraint)
+    // Check height constraint if enabled (to exclude canopy or other areas)
+    if (app->auto_layout.use_height_constraint)
     {
-        if (position.z < app->auto_layout.min_z || position.z > app->auto_layout.max_z)
+        if (position.y < app->auto_layout.min_height || position.y > app->auto_layout.max_height)
         {
             return false;
         }
@@ -1263,12 +1263,7 @@ int RunAutoLayout(AppState* app)
         float minZ = app->mesh_bounds.min.z;
         float maxZ = app->mesh_bounds.max.z;
 
-        // Apply Z constraints if enabled
-        if (app->auto_layout.use_z_constraint)
-        {
-            minZ = fmaxf(minZ, app->auto_layout.min_z);
-            maxZ = fminf(maxZ, app->auto_layout.max_z);
-        }
+        // Note: height constraint is applied later in IsValidSurface()
 
         // Calculate grid dimensions
         int gridX = (int)((maxX - minX) / grid_spacing) + 1;
