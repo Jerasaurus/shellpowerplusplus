@@ -2,7 +2,7 @@
  * Solar Array Designer
  * Core application implementation
  */
-
+#include "raylib.h"
 #include "app.h"
 #include <math.h>
 #include <stdarg.h>
