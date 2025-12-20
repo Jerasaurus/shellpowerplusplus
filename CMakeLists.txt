@@ -4,23 +4,29 @@ project(shellpower C)
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-# Fetch raylib
-include(FetchContent)
+# Try to find system-installed raylib first (e.g., via Homebrew)
+find_package(raylib QUIET)
 
-FetchContent_Declare(
-    raylib
-    GIT_REPOSITORY https://github.com/raysan5/raylib.git
-    GIT_TAG 5.5
-    GIT_SHALLOW TRUE
-)
-
-FetchContent_MakeAvailable(raylib)
+if(raylib_FOUND)
+    message(STATUS "Found system raylib: ${raylib_VERSION}")
+else()
+    message(STATUS "System raylib not found, fetching via Git...")
+    include(FetchContent)
+    FetchContent_Declare(
+        raylib
+        GIT_REPOSITORY https://github.com/raysan5/raylib.git
+        GIT_TAG 5.5
+        GIT_SHALLOW TRUE
+    )
+    FetchContent_MakeAvailable(raylib)
+endif()
 
 # Source files
 set(SOURCES
     src/main.c
     src/app.c
     src/gui.c
+    src/lib/tinyfiledialogs.c
 )
 
 # Executable
@@ -36,7 +42,8 @@ target_link_libraries(${PROJECT_NAME} PRIVATE raylib)
 
 # Platform-specific settings
 if(WIN32)
-    # Windows-specific settings (NOGDI/NOUSER handled per-file in source)
+    # tinyfiledialogs requires Comdlg32 and Ole32 on Windows
+    target_link_libraries(${PROJECT_NAME} PRIVATE comdlg32 ole32)
 elseif(APPLE)
     target_link_libraries(${PROJECT_NAME} PRIVATE
         "-framework OpenGL"
