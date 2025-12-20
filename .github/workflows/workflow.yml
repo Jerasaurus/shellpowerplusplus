@@ -48,21 +48,6 @@ jobs:
         with:
           files: shellpower-macos-arm64
 
-  build-macos-intel:
-    runs-on: macos-13
-    steps:
-      - uses: actions/checkout@v4
-          
-      - name: Build
-        run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --config Release
-          mv build/shellpower shellpower-macos-x64
-          
-      - name: Upload to Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: shellpower-macos-x64
 
   build-windows:
     runs-on: windows-latest
