@@ -2,23 +2,34 @@
  * GUI implementation using raygui
  */
 
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-// Note: Do NOT define NOGDI or NOUSER here - commdlg.h needs them
-#include <windows.h>
-#include <commdlg.h>
-// Undefine Windows macros that conflict with raylib
-#undef near
-#undef far
-#endif
-
-#include "raylib.h"
 #include <stdio.h>
 #include <string.h>
 #include "app.h"
 #include "raygui.h"
 
-#ifndef _WIN32
+#ifdef _WIN32
+// Save raylib definitions before Windows headers override them
+#define CloseWindow CloseWindow_WIN32
+#define Rectangle Rectangle_WIN32
+#define ShowCursor ShowCursor_WIN32
+#define LoadImage LoadImage_WIN32
+#define DrawText DrawText_WIN32
+#define DrawTextEx DrawTextEx_WIN32
+
+#define WIN32_LEAN_AND_MEAN
+#include <commdlg.h>
+#include <windows.h>
+
+// Restore raylib definitions
+#undef CloseWindow
+#undef Rectangle
+#undef ShowCursor
+#undef LoadImage
+#undef DrawText
+#undef DrawTextEx
+#undef near
+#undef far
+#else
 #include <stdlib.h>
 #endif
 
