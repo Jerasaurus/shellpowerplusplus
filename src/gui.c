@@ -2,34 +2,19 @@
  * GUI implementation using raygui
  */
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#include <commdlg.h>
+#endif
+
 #include <stdio.h>
 #include <string.h>
 #include "app.h"
 #include "raygui.h"
 
-#ifdef _WIN32
-// Save raylib definitions before Windows headers override them
-#define CloseWindow CloseWindow_WIN32
-#define Rectangle Rectangle_WIN32
-#define ShowCursor ShowCursor_WIN32
-#define LoadImage LoadImage_WIN32
-#define DrawText DrawText_WIN32
-#define DrawTextEx DrawTextEx_WIN32
-
-#define WIN32_LEAN_AND_MEAN
-#include <commdlg.h>
-#include <windows.h>
-
-// Restore raylib definitions
-#undef CloseWindow
-#undef Rectangle
-#undef ShowCursor
-#undef LoadImage
-#undef DrawText
-#undef DrawTextEx
-#undef near
-#undef far
-#else
+#ifndef _WIN32
 #include <stdlib.h>
 #endif
 
@@ -56,7 +41,7 @@ bool OpenFileDialog(char *outPath, int maxLen, const char *filter) {
     }
     return false;
 #else
-// macOS/Linux: Use zenity or osascript
+    // macOS/Linux: Use zenity or osascript
 #ifdef __APPLE__
     FILE *pipe = popen("osascript -e 'POSIX path of (choose file of type {\"obj\", \"stl\", \"OBJ\", \"STL\"} with "
                        "prompt \"Select Mesh File\")'",
@@ -67,7 +52,6 @@ bool OpenFileDialog(char *outPath, int maxLen, const char *filter) {
 
     if (pipe) {
         if (fgets(outPath, maxLen, pipe)) {
-            // Remove trailing newline
             size_t len = strlen(outPath);
             if (len > 0 && outPath[len - 1] == '\n')
                 outPath[len - 1] = '\0';
