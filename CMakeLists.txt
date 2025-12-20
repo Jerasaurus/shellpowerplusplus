@@ -35,7 +35,10 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 target_link_libraries(${PROJECT_NAME} PRIVATE raylib)
 
 # Platform-specific settings
-if(APPLE)
+if(WIN32)
+    # Prevent Windows API conflicts with raylib
+    target_compile_definitions(${PROJECT_NAME} PRIVATE NOGDI NOUSER)
+elseif(APPLE)
     target_link_libraries(${PROJECT_NAME} PRIVATE
         "-framework OpenGL"
         "-framework Cocoa"
