@@ -6,6 +6,7 @@
 #include "app.h"
 #include <math.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -316,6 +317,132 @@ void CameraFitToBounds(CameraController *cam, BoundingBox bounds) {
 }
 
 //------------------------------------------------------------------------------
+// STL Loader
+//------------------------------------------------------------------------------
+#pragma pack(push, 1)
+typedef struct {
+    Vector3 normal;
+    Vector3 v1, v2, v3;
+    uint16_t attribute;
+} STLTriangle;
+#pragma pack(pop)
+
+static bool IsSTLFile(const char *path) {
+    const char *ext = strrchr(path, '.');
+    if (!ext) return false;
+#ifdef _WIN32
+    return (_stricmp(ext, ".stl") == 0);
+#else
+    return (strcasecmp(ext, ".stl") == 0);
+#endif
+}
+
+static Model LoadSTL(const char *path) {
+    Model model = {0};
+
+    FILE *file = fopen(path, "rb");
+    if (!file) {
+        TraceLog(LOG_ERROR, "STL: Failed to open file: %s", path);
+        return model;
+    }
+
+    // Skip 80-byte header
+    fseek(file, 80, SEEK_SET);
+
+    // Read triangle count
+    uint32_t triangleCount = 0;
+    if (fread(&triangleCount, sizeof(uint32_t), 1, file) != 1) {
+        TraceLog(LOG_ERROR, "STL: Failed to read triangle count");
+        fclose(file);
+        return model;
+    }
+
+    if (triangleCount == 0) {
+        TraceLog(LOG_ERROR, "STL: No triangles in file");
+        fclose(file);
+        return model;
+    }
+
+    TraceLog(LOG_INFO, "STL: Loading %u triangles from %s", triangleCount, path);
+
+    // Allocate mesh data
+    Mesh mesh = {0};
+    mesh.vertexCount = triangleCount * 3;
+    mesh.triangleCount = triangleCount;
+    mesh.vertices = (float *)RL_MALLOC(sizeof(float) * 3 * mesh.vertexCount);
+    mesh.normals = (float *)RL_MALLOC(sizeof(float) * 3 * mesh.vertexCount);
+    mesh.texcoords = (float *)RL_CALLOC(mesh.vertexCount * 2, sizeof(float));
+
+    if (!mesh.vertices || !mesh.normals || !mesh.texcoords) {
+        TraceLog(LOG_ERROR, "STL: Failed to allocate mesh memory");
+        RL_FREE(mesh.vertices);
+        RL_FREE(mesh.normals);
+        RL_FREE(mesh.texcoords);
+        fclose(file);
+        return model;
+    }
+
+    // Read triangles
+    STLTriangle tri;
+    for (uint32_t t = 0; t < triangleCount; t++) {
+        if (fread(&tri, sizeof(STLTriangle), 1, file) != 1) {
+            TraceLog(LOG_ERROR, "STL: Failed to read triangle %u", t);
+            RL_FREE(mesh.vertices);
+            RL_FREE(mesh.normals);
+            RL_FREE(mesh.texcoords);
+            fclose(file);
+            return model;
+        }
+
+        int i = t * 9;  // 3 vertices * 3 floats
+
+        // Vertex 1
+        mesh.vertices[i + 0] = tri.v1.x;
+        mesh.vertices[i + 1] = tri.v1.y;
+        mesh.vertices[i + 2] = tri.v1.z;
+        // Vertex 2
+        mesh.vertices[i + 3] = tri.v2.x;
+        mesh.vertices[i + 4] = tri.v2.y;
+        mesh.vertices[i + 5] = tri.v2.z;
+        // Vertex 3
+        mesh.vertices[i + 6] = tri.v3.x;
+        mesh.vertices[i + 7] = tri.v3.y;
+        mesh.vertices[i + 8] = tri.v3.z;
+
+        // Same normal for all 3 vertices
+        mesh.normals[i + 0] = tri.normal.x;
+        mesh.normals[i + 1] = tri.normal.y;
+        mesh.normals[i + 2] = tri.normal.z;
+        mesh.normals[i + 3] = tri.normal.x;
+        mesh.normals[i + 4] = tri.normal.y;
+        mesh.normals[i + 5] = tri.normal.z;
+        mesh.normals[i + 6] = tri.normal.x;
+        mesh.normals[i + 7] = tri.normal.y;
+        mesh.normals[i + 8] = tri.normal.z;
+    }
+
+    fclose(file);
+
+    // Upload mesh to GPU
+    UploadMesh(&mesh, false);
+
+    // Create model from mesh
+    model.transform = MatrixIdentity();
+    model.meshCount = 1;
+    model.materialCount = 1;
+    model.meshes = (Mesh *)RL_MALLOC(sizeof(Mesh));
+    model.materials = (Material *)RL_MALLOC(sizeof(Material));
+    model.meshMaterial = (int *)RL_MALLOC(sizeof(int));
+    model.meshes[0] = mesh;
+    model.materials[0] = LoadMaterialDefault();
+    model.meshMaterial[0] = 0;
+
+    TraceLog(LOG_INFO, "STL: Loaded successfully (%d vertices)", mesh.vertexCount);
+
+    return model;
+}
+
+//------------------------------------------------------------------------------
 // Mesh Loading
 //------------------------------------------------------------------------------
 bool LoadVehicleMesh(AppState *app, const char *path) {
@@ -325,8 +452,12 @@ bool LoadVehicleMesh(AppState *app, const char *path) {
         app->mesh_loaded = false;
     }
 
-    // Load model
-    app->vehicle_model = LoadModel(path);
+    // Load model (use custom STL loader for .stl files)
+    if (IsSTLFile(path)) {
+        app->vehicle_model = LoadSTL(path);
+    } else {
+        app->vehicle_model = LoadModel(path);
+    }
     if (app->vehicle_model.meshCount == 0) {
         SetStatus(app, "Error: Failed to load mesh");
         return false;
