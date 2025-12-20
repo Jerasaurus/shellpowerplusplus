@@ -7,17 +7,16 @@
 #define RAYGUI_IMPLEMENTATION
 #include "raygui.h"
 
-#include "app.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include "app.h"
 
 // Global font
 static Font appFont = {0};
 
-int main(int argc, char* argv[])
-{
-    (void)argc;
-    (void)argv;
+int main(int argc, char *argv[]) {
+    (void) argc;
+    (void) argv;
 
     // Initialize window
     const int screenWidth = 1280;
@@ -29,14 +28,11 @@ int main(int argc, char* argv[])
 
     // Load custom font
     appFont = LoadFontEx("assets/Inter-Regular.otf", 18, NULL, 256);
-    if (appFont.texture.id == 0)
-    {
+    if (appFont.texture.id == 0) {
         // Fallback to default font if custom font not found
         appFont = GetFontDefault();
         TraceLog(LOG_WARNING, "Custom font not found, using default");
-    }
-    else
-    {
+    } else {
         // Enable font filtering for smoother text
         SetTextureFilter(appFont.texture, TEXTURE_FILTER_BILINEAR);
     }
@@ -53,11 +49,9 @@ int main(int argc, char* argv[])
     AppInit(&app);
 
     // Main loop
-    while (!WindowShouldClose())
-    {
+    while (!WindowShouldClose()) {
         // Handle window resize
-        if (IsWindowResized())
-        {
+        if (IsWindowResized()) {
             app.screen_width = GetScreenWidth();
             app.screen_height = GetScreenHeight();
         }
