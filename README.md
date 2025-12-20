@@ -8,7 +8,7 @@ Downad the release for your computer over in [releases](https://github.com/Jeras
 
 ## Usage
 
-1) you need to convert your model to OBJ ( you can use any cloud converter )
+1) OBJ or STL works, not STEP, but if you can export from cad as OBJ it would be ideal
 
 
 ### 2) Linux
@@ -31,8 +31,8 @@ xattr -d com.apple.quarantine shellpower-macos-arm64
 #double click!
 .\shellpower-windows-x64.exe
 ```
-3) click "Load mesh file" and import your body! This needs to be an OBJ.
-4) transform so the array surface is facing up ( y axis or the green arrow)
+3) click "Load mesh file" and import your body! This needs to be an OBJ OR STL
+4) transform so the array surface is facing up ( y axis or the green arrow), MAKE SURE SCALE IS SET SO THE SIZE DISPLAYED IS IN METERS
 5) go over to cells, (your view will change to vertical, set `Target` to how many sqm of array you want to try and fit on the car.
 6) Dont change any of the checkboxes from defaults and hit `Run Auto-Layout`
 7) Go over to simulate, and you can drag around the `hour` slider to see the array preformance at instantious points during the day.
