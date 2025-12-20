@@ -152,7 +152,7 @@ void AppInit(AppState* app)
 
     // Simulation defaults
     app->sim_settings.latitude = 37.4f;
-    app->sim_settings.longitude = -122.2f;
+    app->sim_settings.longitude = -87.2f;
     app->sim_settings.year = 2024;
     app->sim_settings.month = 6;
     app->sim_settings.day = 21;
@@ -2180,6 +2180,15 @@ void RunTimeSimulationAnimated(AppState* app)
         float altitude, azimuth;
         Vector3 sun_dir = CalculateSunDirection(&app->sim_settings, &altitude, &azimuth);
 
+        float effective_irradiance = 0.0f;
+        //janky air mass approximation
+        if (altitude > 0.0f)
+        {
+            float sin_alt = sinf(altitude * DEG2RAD);
+            float air_mass = 1.0f / fmaxf(sin_alt, 0.01f);  //awesome hardcoded constants. todo, remove these
+            float atmospheric_factor = powf(0.7f, powf(air_mass, 0.678f));
+            effective_irradiance = app->sim_settings.irradiance * atmospheric_factor;
+        }
         // Store for visualization
         app->sim_results.sun_altitude = altitude;
         app->sim_results.sun_azimuth = azimuth;
@@ -2256,7 +2265,7 @@ void RunTimeSimulationAnimated(AppState* app)
 
                 cell->is_shaded = false;
                 float area = preset->width * preset->height;
-                float power_w = app->sim_settings.irradiance * area * facing * preset->efficiency;
+                float power_w = effective_irradiance * area * facing * preset->efficiency;
 
                 instant_power += power_w;
                 cell->power_output = power_w;

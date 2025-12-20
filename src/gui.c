@@ -794,7 +794,7 @@ int DrawSimulationPanel(AppState* app, int x, int y, int w)
     // Time slider for instant simulation
     GuiLabel((Rectangle){x, y, 50, 20}, "Hour:");
     static float lastHour = 12.0f;
-    GuiSlider((Rectangle){x + 55, y, w - 90, 20}, "0", "24", &app->sim_settings.hour, 0, 24);
+    GuiSlider((Rectangle){x + 55, y, w - 90, 20}, "0", NULL, &app->sim_settings.hour, 0, 24);
     char hourText[8];
     snprintf(hourText, sizeof(hourText), "%.1f", app->sim_settings.hour);
     GuiLabel((Rectangle){x + w - 30, y, 30, 20}, hourText);
