@@ -282,7 +282,7 @@ Color GenerateStringColor(void);
 void InitModules(AppState* app);
 int CreateModuleFromCells(AppState* app, const char* name);
 bool SaveModule(CellModule* module, const char* filename);
-bool LoadModule(CellModule* module, const char* filename);
+bool LoadAppModule(CellModule* module, const char* filename);
 void LoadAllModules(AppState* app);
 int PlaceModule(AppState* app, int module_index, Vector3 world_position, Vector3 world_normal);
 void DeleteModule(AppState* app, int module_index);

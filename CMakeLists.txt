@@ -71,3 +71,11 @@ if(MSVC)
 else()
     target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra)
 endif()
+if(WIN32)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE 
+        WIN32_LEAN_AND_MEAN
+        NOGDI 
+        NOUSER
+        _CRT_SECURE_NO_WARNINGS
+    )
+endif()
