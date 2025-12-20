@@ -2,66 +2,35 @@
  * GUI implementation using raygui
  */
 
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>
-#include <commdlg.h>
-#endif
-
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include "app.h"
 #include "raygui.h"
-
-#ifndef _WIN32
-#include <stdlib.h>
-#endif
+#include "lib/tinyfiledialogs.h"
 
 //------------------------------------------------------------------------------
-// File Dialog (platform-specific)
+// File Dialog (using tinyfiledialogs)
 //------------------------------------------------------------------------------
 bool OpenFileDialog(char *outPath, int maxLen, const char *filter) {
-#ifdef _WIN32
-    OPENFILENAMEA ofn;
-    char szFile[MAX_PATH] = {0};
+    (void)filter; // unused, we use our own filter patterns
 
-    ZeroMemory(&ofn, sizeof(ofn));
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = NULL;
-    ofn.lpstrFile = szFile;
-    ofn.nMaxFile = sizeof(szFile);
-    ofn.lpstrFilter = filter ? filter : "All Files\0*.*\0";
-    ofn.nFilterIndex = 1;
-    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+    char const *filterPatterns[] = {"*.obj", "*.stl", "*.OBJ", "*.STL"};
+    char *result = tinyfd_openFileDialog(
+        "Select Mesh File",
+        "",
+        4,
+        filterPatterns,
+        "Mesh files (*.obj, *.stl)",
+        0
+    );
 
-    if (GetOpenFileNameA(&ofn)) {
-        strncpy(outPath, szFile, maxLen - 1);
+    if (result) {
+        strncpy(outPath, result, maxLen - 1);
+        outPath[maxLen - 1] = '\0';
         return true;
     }
     return false;
-#else
-    // macOS/Linux: Use zenity or osascript
-#ifdef __APPLE__
-    FILE *pipe = popen("osascript -e 'POSIX path of (choose file of type {\"obj\", \"stl\", \"OBJ\", \"STL\"} with "
-                       "prompt \"Select Mesh File\")'",
-                       "r");
-#else
-    FILE *pipe = popen("zenity --file-selection --file-filter='Mesh files|*.obj *.stl *.OBJ *.STL' 2>/dev/null", "r");
-#endif
-
-    if (pipe) {
-        if (fgets(outPath, maxLen, pipe)) {
-            size_t len = strlen(outPath);
-            if (len > 0 && outPath[len - 1] == '\n')
-                outPath[len - 1] = '\0';
-            pclose(pipe);
-            return strlen(outPath) > 0;
-        }
-        pclose(pipe);
-    }
-    return false;
-#endif
 }
 
 //------------------------------------------------------------------------------
