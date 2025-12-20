@@ -76,6 +76,7 @@ typedef struct {
     int cell_ids[MAX_CELLS_PER_STRING];
     int cell_count;
     float total_power;      // Calculated during simulation
+    float total_energy_wh;
 } CellString;
 
 // Cell template within a module (relative position)
@@ -149,7 +150,14 @@ typedef struct {
     float sun_azimuth;
     bool is_daytime;
 } SimResults;
-
+typedef struct TimeSimResults {
+    float total_energy_wh;        // Total energy over the day (Watt-hours)
+    float average_power_w;        // Average power over daylight hours
+    float peak_power_w;           // Maximum instantaneous power
+    float average_shaded_pct;     // Average shading percentage
+    float min_power_w;            // Minimum power (when not zero)
+    float energy_by_hour[24];     // Energy breakdown by hour (optional)
+} TimeSimResults;
 // Camera controller state
 typedef struct {
     Camera3D camera;
@@ -210,6 +218,8 @@ typedef struct {
     SimSettings sim_settings;
     SimResults sim_results;
     bool sim_run;           // Has simulation been run?
+    bool time_sim_run;
+    TimeSimResults time_sim_results;
 
     // UI state
     bool show_file_dialog;
@@ -278,7 +288,8 @@ int PlaceModule(AppState* app, int module_index, Vector3 world_position, Vector3
 void DeleteModule(AppState* app, int module_index);
 
 // Simulation
-void RunSimulation(AppState* app);
+void RunStaticSimulation(AppState* app);
+void RunTimeSimulationAnimated(AppState* app);
 Vector3 CalculateSunDirection(SimSettings* settings, float* altitude, float* azimuth);
 bool CheckCellShading(AppState* app, SolarCell* cell, Vector3 sun_dir);
 float CalculateCellPower(AppState* app, SolarCell* cell, Vector3 sun_dir, CellPreset* preset, float irradiance);

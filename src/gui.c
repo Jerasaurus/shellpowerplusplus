@@ -1,5 +1,4 @@
 /*
- * Solar Array Designer
  * GUI implementation using raygui
  */
 
@@ -296,6 +295,9 @@ int DrawImportPanel(AppState* app, int x, int y, int w)
         {
             app->mesh_rotation.y += 90;
             transformChanged = true;
+        }
+        if (transformChanged) {
+            RunStaticSimulation(app);
         }
         char rotYText[16];
         snprintf(rotYText, sizeof(rotYText), "%.0f", app->mesh_rotation.y);
@@ -677,7 +679,7 @@ int DrawWiringPanel(AppState* app, int x, int y, int w)
 
 int DrawSimulationPanel(AppState* app, int x, int y, int w)
 {
-    GuiLabel((Rectangle){x, y, w, 20}, "SIMULATION");
+    GuiLabel((Rectangle){x, y, w, 20}, "SIMULATION SETTINGS");
     y += 25;
 
     // Location - text fields for precise input
@@ -748,22 +750,6 @@ int DrawSimulationPanel(AppState* app, int x, int y, int w)
     GuiSpinner((Rectangle){x + 150, y, 50, 20}, NULL, &app->sim_settings.day, 1, 31, false);
     y += 25;
 
-    // Time slider - auto-run simulation when changed
-    GuiLabel((Rectangle){x, y, 50, 20}, "Hour:");
-    static float lastHour = 12.0f;
-    GuiSlider((Rectangle){x + 55, y, w - 90, 20}, "0", "24", &app->sim_settings.hour, 0, 24);
-    char hourText[8];
-    snprintf(hourText, sizeof(hourText), "%.1f", app->sim_settings.hour);
-    GuiLabel((Rectangle){x + w - 30, y, 30, 20}, hourText);
-
-    // Auto-run simulation when time changes
-    if (app->sim_settings.hour != lastHour && app->cell_count > 0)
-    {
-        RunSimulation(app);
-        lastHour = app->sim_settings.hour;
-    }
-    y += 25;
-
     // Irradiance
     GuiLabel((Rectangle){x, y, 70, 20}, "Irradiance:");
     static char irrText[16] = "1000";
@@ -796,36 +782,166 @@ int DrawSimulationPanel(AppState* app, int x, int y, int w)
     GuiLabel((Rectangle){x + 140, y, 50, 20}, "W/m2");
     y += 30;
 
-    // Run button
-    if (GuiButton((Rectangle){x, y, w, 30}, "#04#Run Simulation (S)"))
+    // =========================================================================
+    // STATIC (INSTANT) SIMULATION SECTION
+    // =========================================================================
+    GuiLine((Rectangle){x, y, w, 1}, NULL);
+    y += 10;
+
+    GuiLabel((Rectangle){x, y, w, 20}, "INSTANT SIMULATION");
+    y += 22;
+
+    // Time slider for instant simulation
+    GuiLabel((Rectangle){x, y, 50, 20}, "Hour:");
+    static float lastHour = 12.0f;
+    GuiSlider((Rectangle){x + 55, y, w - 90, 20}, "0", "24", &app->sim_settings.hour, 0, 24);
+    char hourText[8];
+    snprintf(hourText, sizeof(hourText), "%.1f", app->sim_settings.hour);
+    GuiLabel((Rectangle){x + w - 30, y, 30, 20}, hourText);
+
+    // Auto-run simulation when time changes
+    if (app->sim_settings.hour != lastHour && app->cell_count > 0){
+        RunStaticSimulation(app);
+        lastHour = app->sim_settings.hour;
+    }
+    y += 25;
+
+    // Run static simulation button
+    if (GuiButton((Rectangle){x, y, w, 25}, "#04#Run Instant Simulation"))
     {
-        RunSimulation(app);
+        app->time_sim_run = false;
+        RunStaticSimulation(app);
+    }
+    y += 30;
+
+    // Static simulation results
+    if (app->sim_run && !app->time_sim_run)
+    {
+        char results[128];
+        snprintf(results, sizeof(results),
+            "Power: %.1f W | Shaded: %.1f%%\n"
+            "Sun: Alt %.1f° Az %.1f°",
+            app->sim_results.total_power,
+            app->sim_results.shaded_percentage,
+            app->sim_results.sun_altitude,
+            app->sim_results.sun_azimuth);
+        GuiLabel((Rectangle){x, y, w, 40}, results);
+        y += 45;
+    }
+    else if (!app->sim_run)
+    {
+        GuiLabel((Rectangle){x, y, w, 20}, "Drag slider or click Run");
+        y += 25;
+    }
+
+    // =========================================================================
+    // TIME-VARYING SIMULATION SECTION
+    // =========================================================================
+    GuiLine((Rectangle){x, y, w, 1}, NULL);
+    y += 10;
+
+    GuiLabel((Rectangle){x, y, w, 20}, "DAILY ENERGY SIMULATION");
+    y += 22;
+
+    GuiLabel((Rectangle){x, y, w, 35}, "Simulates full day (6AM-6PM)\nacross all vehicle headings");
+    y += 38;
+
+    // Time simulation parameters
+    GuiLabel((Rectangle){x, y, w, 20}, "Time samples:");
+    static int timeSamples = 48;
+    GuiSpinner((Rectangle){x + 100, y, 80, 20}, NULL, &timeSamples, 12, 96, false);
+    y += 24;
+
+    GuiLabel((Rectangle){x, y, w, 20}, "Heading samples:");
+    static int headingSamples = 12;
+    GuiSpinner((Rectangle){x + 100, y, 80, 20}, NULL, &headingSamples, 4, 36, false);
+    y += 28;
+
+    // Run time simulation button
+    if (GuiButton((Rectangle){x, y, w, 30}, "#131#Run Daily Simulation"))
+    {
+        RunTimeSimulationAnimated(app);
     }
     y += 35;
 
-    // Results
-    if (app->sim_run)
+    // Time simulation results
+    if (app->time_sim_run)
     {
         GuiLine((Rectangle){x, y, w, 1}, NULL);
-        y += 10;
+        y += 8;
 
-        char results[256];
-        snprintf(results, sizeof(results),
-            "RESULTS\n"
-            "Total Power: %.1f W\n"
-            "Shaded: %.1f%% (%d cells)\n"
-            "Sun Alt: %.1f° Az: %.1f°",
-            app->sim_results.total_power,
-            app->sim_results.shaded_percentage,
-            app->sim_results.shaded_count,
-            app->sim_results.sun_altitude,
-            app->sim_results.sun_azimuth);
+        GuiLabel((Rectangle){x, y, w, 20}, "DAILY RESULTS");
+        y += 22;
 
-        GuiLabel((Rectangle){x, y, w, 80}, results);
-        y += 85;
+        char timeResults[256];
+        snprintf(timeResults, sizeof(timeResults),
+            "Daily Energy: %.1f Wh\n"
+            "Avg Power: %.1f W\n"
+            "Avg Shaded: %.1f%%\n"
+            "Peak Power: %.1f W",
+            app->time_sim_results.total_energy_wh,
+            app->time_sim_results.average_power_w,
+            app->time_sim_results.average_shaded_pct,
+            app->time_sim_results.peak_power_w);
 
-        // Per-string breakdown
+        GuiLabel((Rectangle){x, y, w, 70}, timeResults);
+        y += 75;
+
+        // Per-string energy breakdown
         if (app->string_count > 0)
+        {
+            GuiLabel((Rectangle){x, y, w, 20}, "String Energy (Wh):");
+            y += 20;
+
+            for (int s = 0; s < app->string_count && s < 4; s++)
+            {
+                char strEnergy[48];
+                snprintf(strEnergy, sizeof(strEnergy), "#%d: %.1f Wh (%.1f W avg)",
+                    app->strings[s].id,
+                    app->strings[s].total_energy_wh,
+                    app->strings[s].total_energy_wh / 12.0f);  // 12 hours
+                GuiLabel((Rectangle){x + 5, y, w - 5, 18}, strEnergy);
+                y += 18;
+            }
+            y += 5;
+        }
+
+        // Efficiency metrics
+        // Efficiency metrics
+        GuiLine((Rectangle){x, y, w, 1}, NULL);
+        y += 8;
+
+        CellPreset* preset = (CellPreset*)&CELL_PRESETS[app->selected_preset];
+        float total_area = app->cell_count * preset->width * preset->height;
+
+        // Ideal tracking with sinusoidal irradiance profile (integral of sin over half-period = 2/pi)
+        float avg_irradiance_factor = 2.0f / PI;
+        float theoretical_max = total_area * app->sim_settings.irradiance * preset->efficiency * 12.0f * avg_irradiance_factor;
+
+        float capture_efficiency = (theoretical_max > 0) ?
+            (app->time_sim_results.total_energy_wh / theoretical_max) * 100.0f : 0.0f;
+
+        char effText[128];
+        snprintf(effText, sizeof(effText),
+            "Array area: %.3f m2\n"
+            "Capture eff: %.1f%%\n"
+            "(vs ideal tracking)",
+            total_area,
+            capture_efficiency);
+        GuiLabel((Rectangle){x, y, w, 50}, effText);
+        y += 55;
+    }
+
+    // =========================================================================
+    // GENERAL RESULTS (shown if any simulation has run)
+    // =========================================================================
+    if (app->sim_run || app->time_sim_run)
+    {
+        GuiLine((Rectangle){x, y, w, 1}, NULL);
+        y += 8;
+
+        // Per-string power breakdown (current/static values)
+        if (app->string_count > 0 && !app->time_sim_run)
         {
             GuiLabel((Rectangle){x, y, w, 20}, "String Power:");
             y += 20;
@@ -837,20 +953,14 @@ int DrawSimulationPanel(AppState* app, int x, int y, int w)
                     app->strings[s].id,
                     app->strings[s].total_power,
                     app->strings[s].cell_count);
-                GuiLabel((Rectangle){x + 10, y, w - 10, 18}, strPower);
+                GuiLabel((Rectangle){x + 5, y, w - 5, 18}, strPower);
                 y += 18;
             }
         }
     }
-    else
-    {
-        GuiLabel((Rectangle){x, y, w, 20}, "Click 'Run Simulation'");
-        y += 25;
-    }
 
     return y;
 }
-
 void DrawStatusBar(AppState* app)
 {
     int y = app->screen_height - 25;
