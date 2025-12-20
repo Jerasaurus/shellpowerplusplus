@@ -120,7 +120,8 @@ Color GenerateStringColor(void)
 void AppInit(AppState* app)
 {
     srand((unsigned int)time(NULL));
-
+    app->time_sim_run = false;
+    memset(&app->time_sim_results, 0, sizeof(TimeSimResults));//TODO: fix this lol?
     // Initialize mode
     app->mode = MODE_IMPORT;
     app->sidebar_width = 280;
@@ -1139,7 +1140,7 @@ void DeleteModule(AppState* app, int module_index)
 //------------------------------------------------------------------------------
 void InitAutoLayout(AppState* app)
 {
-    app->auto_layout.target_area = 1.0f;           // 1 m^2 default
+    app->auto_layout.target_area = 6.0f;           // 1 m^2 default
     app->auto_layout.min_normal_angle = 62.0f;      // Flat surfaces OK
     app->auto_layout.max_normal_angle = 90.0f;     // Up to 45 degrees from horizontal
     app->auto_layout.surface_threshold = 30.0f;    // Adjacent triangles within 30 degrees
@@ -1155,6 +1156,119 @@ void InitAutoLayout(AppState* app)
     app->auto_layout.grid_spacing = 0.0f;          // 0 = auto based on cell size
     app->auto_layout_running = false;
     app->auto_layout_progress = 0;
+}
+// Check if a surface point is valid for cell placement
+// Check if a point is on the mesh surface (cast ray down and verify hit is close to expected position)
+bool IsPointOnMesh(AppState* app, Vector3 position, float tolerance)
+{
+    if (!app->mesh_loaded) return false;
+
+    // Cast ray downward from above the position
+    Ray ray;
+    ray.position = (Vector3){position.x, app->mesh_bounds.max.y + 1.0f, position.z};
+    ray.direction = (Vector3){0, -1, 0};
+
+    RayCollision hit = GetRayCollisionMesh(ray, app->vehicle_mesh, app->vehicle_model.transform);
+
+    if (!hit.hit) return false;
+
+    // Check if the hit point is close to our expected position
+    float heightDiff = fabsf(hit.point.y - position.y);
+    return heightDiff < tolerance;
+}
+
+// Check if the cell footprint is fully supported by the mesh (no overhanging edges)
+// Also checks that the cell doesn't clip through any mesh geometry above it
+bool IsCellFootprintValid(AppState* app, Vector3 position, Vector3 normal, float cellWidth, float cellHeight)
+{
+    if (!app->mesh_loaded) return false;
+
+    // Calculate cell corner directions (similar to how we draw cells)
+    Vector3 right;
+    Vector3 ref = {0, 0, 1};
+    right = Vector3CrossProduct(ref, normal);
+    if (Vector3Length(right) < 0.001f)
+    {
+        ref = (Vector3){1, 0, 0};
+        right = Vector3CrossProduct(ref, normal);
+    }
+    right = Vector3Normalize(right);
+
+    Vector3 forward = Vector3Normalize(Vector3CrossProduct(normal, right));
+
+    // Scale to half cell size
+    Vector3 halfRight = Vector3Scale(right, cellWidth / 2.0f);
+    Vector3 halfForward = Vector3Scale(forward, cellHeight / 2.0f);
+
+    // Check corners and edge midpoints (8 points total for better coverage)
+    Vector3 checkPoints[9];
+    checkPoints[0] = position; // Center
+    checkPoints[1] = Vector3Add(position, Vector3Add(halfRight, halfForward));           // +X +Z
+    checkPoints[2] = Vector3Add(position, Vector3Add(Vector3Negate(halfRight), halfForward));     // -X +Z
+    checkPoints[3] = Vector3Add(position, Vector3Add(halfRight, Vector3Negate(halfForward)));     // +X -Z
+    checkPoints[4] = Vector3Add(position, Vector3Add(Vector3Negate(halfRight), Vector3Negate(halfForward))); // -X -Z
+    checkPoints[5] = Vector3Add(position, halfRight);                                     // +X edge
+    checkPoints[6] = Vector3Add(position, Vector3Negate(halfRight));                      // -X edge
+    checkPoints[7] = Vector3Add(position, halfForward);                                   // +Z edge
+    checkPoints[8] = Vector3Add(position, Vector3Negate(halfForward));                    // -Z edge
+
+    float tolerance = 0.05f; // 5cm tolerance for surface matching
+
+    for (int i = 0; i < 9; i++)
+    {
+        Vector3 checkPos = checkPoints[i];
+
+        // 1. Check that this point is on the mesh (ray cast down finds surface nearby)
+        Ray rayDown;
+        rayDown.position = (Vector3){checkPos.x, app->mesh_bounds.max.y + 1.0f, checkPos.z};
+        rayDown.direction = (Vector3){0, -1, 0};
+
+        RayCollision hitDown = GetRayCollisionMesh(rayDown, app->vehicle_mesh, app->vehicle_model.transform);
+
+        if (!hitDown.hit)
+        {
+            // No mesh surface below this point - cell would hang off edge
+            return false;
+        }
+
+        // Check if the surface is at approximately the same height as our cell position
+        float expectedY = position.y; // Cell center height
+        float surfaceY = hitDown.point.y;
+
+        // Allow some tolerance for curved surfaces, but not too much
+        if (fabsf(surfaceY - expectedY) > tolerance * 2.0f)
+        {
+            // Surface height differs too much - might be a different surface or edge
+            return false;
+        }
+
+        // Also check that the surface normal is similar (we're on the same face)
+        float normalDot = Vector3DotProduct(normal, hitDown.normal);
+        if (normalDot < 0.7f)
+        {
+            // Normal differs too much - we're on a different surface
+            return false;
+        }
+
+        // 2. Check for mesh geometry ABOVE this point that would clip the cell
+        // Cast ray upward from just above the surface to check for obstructions
+        Ray rayUp;
+        rayUp.position = Vector3Add(checkPos, Vector3Scale(normal, 0.01f)); // Start just above surface
+        rayUp.direction = normal; // Cast along surface normal (upward for upward-facing surfaces)
+
+        RayCollision hitUp = GetRayCollisionMesh(rayUp, app->vehicle_mesh, app->vehicle_model.transform);
+
+        // If we hit something close above us, the cell would clip into it
+        // Use a distance based on how "thick" a cell would be (say 5mm) plus some margin
+        float cellThickness = 0.02f; // 2cm clearance above cell
+        if (hitUp.hit && hitUp.distance < cellThickness)
+        {
+            // Mesh geometry too close above - cell would clip
+            return false;
+        }
+    }
+
+    return true;
 }
 
 // Check if a surface point is valid for cell placement
@@ -1183,9 +1297,15 @@ bool IsValidSurface(AppState* app, Vector3 position, Vector3 normal)
         }
     }
 
+    // Check that the full cell footprint is valid on the mesh
+    CellPreset* preset = (CellPreset*)&CELL_PRESETS[app->selected_preset];
+    if (!IsCellFootprintValid(app, position, normal, preset->width, preset->height))
+    {
+        return false;
+    }
+
     return true;
 }
-
 // Calculate occlusion score for a position (0 = never occluded, 1 = always occluded)
 // Calculate occlusion score for a position (0 = never occluded, 1 = always occluded)
 // Now samples multiple vehicle headings to simulate driving in different directions
@@ -1939,7 +2059,7 @@ float CalculateCellPower(AppState* app, SolarCell* cell, Vector3 sun_dir, CellPr
     return power;
 }
 
-void RunSimulation(AppState* app)
+void RunStaticSimulation(AppState* app)
 {
     if (app->cell_count == 0)
     {
@@ -1950,6 +2070,7 @@ void RunSimulation(AppState* app)
     CellPreset* preset = (CellPreset*)&CELL_PRESETS[app->selected_preset];
 
     // Calculate sun position
+
     app->sim_results.sun_direction = CalculateSunDirection(
         &app->sim_settings,
         &app->sim_results.sun_altitude,
@@ -2015,7 +2136,259 @@ void RunSimulation(AppState* app)
     SetStatus(app, "Simulation: %.1fW total, %.1f%% shaded",
         app->sim_results.total_power, app->sim_results.shaded_percentage);
 }
+void RunTimeSimulationAnimated(AppState* app)
+{
+    if (app->cell_count == 0 || !app->mesh_loaded) {
+        SetStatus(app, "No cells or mesh to simulate");
+        return;
+    }
 
+    CellPreset* preset = (CellPreset*)&CELL_PRESETS[app->selected_preset];
+
+    const int TIME_SAMPLES = 48;
+    const int HEADING_SAMPLES = 36;
+    const float START_HOUR = 6.0f;
+    const float DURATION = 12.0f;
+    const float dt_hours = DURATION / (float)(TIME_SAMPLES - 1);
+    const float heading_step = 360.0f / HEADING_SAMPLES;
+
+    // Accumulators - these accumulate across ALL time steps and headings
+    float* cell_energy = (float*)calloc(app->cell_count, sizeof(float));
+    float* string_energy = (float*)calloc(app->string_count, sizeof(float));
+    if (!cell_energy) return;
+
+    float total_energy = 0.0f;
+    float peak_power = 0.0f;
+    int total_samples = 0;
+    int shaded_samples = 0;
+
+    // Clear hourly data
+    for (int h = 0; h < 24; h++) {
+        app->time_sim_results.energy_by_hour[h] = 0;
+    }
+
+    int step = 0;
+    int total_steps = TIME_SAMPLES * HEADING_SAMPLES;
+
+    // Main simulation loop: TIME x HEADING
+    for (int ti = 0; ti < TIME_SAMPLES; ti++)
+    {
+        float hour = START_HOUR + (DURATION * ti / (float)(TIME_SAMPLES - 1));
+
+        // Calculate sun direction once per time step
+        app->sim_settings.hour = hour;
+        float altitude, azimuth;
+        Vector3 sun_dir = CalculateSunDirection(&app->sim_settings, &altitude, &azimuth);
+
+        // Store for visualization
+        app->sim_results.sun_altitude = altitude;
+        app->sim_results.sun_azimuth = azimuth;
+        app->sim_results.is_daytime = (altitude > 0);
+
+        // Skip night time
+        if (altitude <= 0) {
+            step += HEADING_SAMPLES;
+            continue;
+        }
+
+        // Accumulator for this time step (sum across all headings, then average)
+        float time_step_power_sum = 0.0f;
+
+        // Temporary accumulators for this time step's cell energy
+        // (we average over headings, then add to total cell_energy)
+        float* cell_power_this_timestep = (float*)calloc(app->cell_count, sizeof(float));
+
+        // Inner loop: HEADING (vehicle rotation)
+        for (int hi = 0; hi < HEADING_SAMPLES; hi++)
+        {
+            float heading_deg = hi * heading_step;
+            float heading_rad = heading_deg * DEG2RAD;
+
+            // Check for cancel
+            PollInputEvents();
+            if (WindowShouldClose() || IsKeyDown(KEY_ESCAPE))
+            {
+                free(cell_energy);
+                free(cell_power_this_timestep);
+                if (string_energy) free(string_energy);
+                SetStatus(app, "Simulation cancelled");
+                return;
+            }
+
+            // Rotate sun direction relative to vehicle heading
+            Vector3 rotated_sun = {
+                sun_dir.x * cosf(-heading_rad) - sun_dir.z * sinf(-heading_rad),
+                sun_dir.y,
+                sun_dir.x * sinf(-heading_rad) + sun_dir.z * cosf(-heading_rad)
+            };
+
+            // Set for visualization
+            app->sim_results.sun_direction = rotated_sun;
+
+            float instant_power = 0.0f;
+
+            for (int c = 0; c < app->cell_count; c++)
+            {
+                SolarCell* cell = &app->cells[c];
+                Vector3 pos = CellGetWorldPosition(app, cell);
+                Vector3 norm = CellGetWorldNormal(app, cell);
+
+                total_samples++;
+                float facing = Vector3DotProduct(norm, rotated_sun);
+
+                if (facing <= 0) {
+                    shaded_samples++;
+                    cell->is_shaded = true;
+                    cell->power_output = 0;
+                    continue;
+                }
+
+                // Occlusion check
+                Ray ray = { Vector3Add(pos, Vector3Scale(norm, 0.01f)), rotated_sun };
+                RayCollision hit = GetRayCollisionMesh(ray, app->vehicle_mesh, app->vehicle_model.transform);
+
+                if (hit.hit && hit.distance > 0.02f) {
+                    shaded_samples++;
+                    cell->is_shaded = true;
+                    cell->power_output = 0;
+                    continue;
+                }
+
+                cell->is_shaded = false;
+                float area = preset->width * preset->height;
+                float power_w = app->sim_settings.irradiance * area * facing * preset->efficiency;
+
+                instant_power += power_w;
+                cell->power_output = power_w;
+
+                // Accumulate this cell's power for this time step (will average over headings)
+                cell_power_this_timestep[c] += power_w;
+            }
+
+            // Track peak instantaneous power
+            if (instant_power > peak_power) {
+                peak_power = instant_power;
+            }
+
+            time_step_power_sum += instant_power;
+            step++;
+
+            // Redraw periodically
+            if (hi % 3 == 0)
+            {
+                int progress = (step * 100) / total_steps;
+
+                BeginDrawing();
+                ClearBackground(BLACK);
+                AppDraw(app);
+
+                // Draw progress overlay
+                int cx = app->screen_width / 2;
+                int cy = app->screen_height / 2 - 200;
+                DrawRectangle(0, 0, app->screen_width, app->screen_height, (Color){0,0,0,100});
+
+                DrawRectangle(cx - 175, cy - 55, 350, 110, (Color){30,30,30,245});
+                DrawRectangleLines(cx - 175, cy - 55, 350, 110, WHITE);
+
+                DrawText("Time Sim (esc to cancel)", cx - 70, cy - 45, 20, WHITE);
+                DrawText(TextFormat("Time: %.1f:00", hour), cx - 140, cy - 15, 16, LIGHTGRAY);
+                DrawText(TextFormat("Heading: %.0f deg", heading_deg), cx + 20, cy - 15, 16, LIGHTGRAY);
+                DrawText(TextFormat("Energy so far: %.1f Wh", total_energy), cx - 80, cy + 5, 16, YELLOW);
+
+                // Progress bar
+                int barY = cy + 30;
+                DrawRectangle(cx - 150, barY, 300, 18, DARKGRAY);
+                DrawRectangle(cx - 150, barY, (300 * progress) / 100, 18, GREEN);
+                DrawRectangleLines(cx - 150, barY, 300, 18, WHITE);
+                DrawText(TextFormat("%d%%", progress), cx - 12, barY + 2, 14, WHITE);
+
+                EndDrawing();
+            }
+        }
+
+        // Average power over all headings for this time step
+        float avg_power_this_timestep = time_step_power_sum / (float)HEADING_SAMPLES;
+
+        // Energy for this time step = average power * time duration
+        float energy_this_timestep = avg_power_this_timestep * dt_hours;
+        total_energy += energy_this_timestep;
+
+        // Store in hourly bucket
+        int hour_bucket = (int)hour;
+        if (hour_bucket >= 0 && hour_bucket < 24) {
+            app->time_sim_results.energy_by_hour[hour_bucket] += energy_this_timestep;
+        }
+
+        // Now add this time step's per-cell energy contribution
+        for (int c = 0; c < app->cell_count; c++) {
+            // Average power for this cell at this time step, then convert to energy
+            float avg_cell_power = cell_power_this_timestep[c] / (float)HEADING_SAMPLES;
+            float cell_energy_step = avg_cell_power * dt_hours;
+            cell_energy[c] += cell_energy_step;
+
+            // Add to string energy
+            SolarCell* cell = &app->cells[c];
+            if (cell->string_id >= 0 && string_energy) {
+                for (int s = 0; s < app->string_count; s++) {
+                    if (app->strings[s].id == cell->string_id) {
+                        string_energy[s] += cell_energy_step;
+                        break;
+                    }
+                }
+            }
+        }
+
+        free(cell_power_this_timestep);
+    }
+
+    // Finalize results
+    float daylight_hours = DURATION;
+
+    for (int i = 0; i < app->cell_count; i++) {
+        // Average power = total energy / hours
+        app->cells[i].power_output = cell_energy[i] / daylight_hours;
+
+        // Mark as shaded if got less than 30% of theoretical max
+        float theoretical_max = preset->width * preset->height * preset->efficiency
+                              * app->sim_settings.irradiance * daylight_hours * 0.5f;
+        app->cells[i].is_shaded = (cell_energy[i] < theoretical_max * 0.3f);
+    }
+
+    for (int s = 0; s < app->string_count; s++) {
+        app->strings[s].total_energy_wh = string_energy[s];
+        app->strings[s].total_power = string_energy[s] / daylight_hours;
+    }
+
+    app->time_sim_results.total_energy_wh = total_energy;
+    app->time_sim_results.average_power_w = total_energy / daylight_hours;
+    app->time_sim_results.peak_power_w = peak_power;
+    app->time_sim_results.average_shaded_pct = (total_samples > 0)
+        ? (100.0f * shaded_samples / total_samples) : 0.0f;
+
+    app->sim_results.total_power = app->time_sim_results.average_power_w;
+    app->sim_results.shaded_percentage = app->time_sim_results.average_shaded_pct;
+
+    // Count shaded cells
+    app->sim_results.shaded_count = 0;
+    for (int i = 0; i < app->cell_count; i++) {
+        if (app->cells[i].is_shaded) app->sim_results.shaded_count++;
+    }
+
+    // Reset sun to noon for final view
+    app->sim_settings.hour = 12.0f;
+    app->sim_results.sun_direction = CalculateSunDirection(
+        &app->sim_settings, &app->sim_results.sun_altitude, &app->sim_results.sun_azimuth);
+    app->sim_results.is_daytime = true;
+
+    app->sim_run = true;
+    app->time_sim_run = true;
+
+    free(cell_energy);
+    if (string_energy) free(string_energy);
+
+    SetStatus(app, "Daily: %.1f Wh total, %.1f W avg, %.1f W peak",
+        total_energy, total_energy / daylight_hours, peak_power);
+}
 //------------------------------------------------------------------------------
 // Update & Draw
 //------------------------------------------------------------------------------
@@ -2041,7 +2414,7 @@ void AppUpdate(AppState* app)
     {
         if (app->mode == MODE_SIMULATION)
         {
-            RunSimulation(app);
+            RunStaticSimulation(app);
         }
     }
 

@@ -1,9 +1,5 @@
 /*
- * Solar Array Designer
  * Main entry point
- *
- * A desktop application for designing and simulating solar arrays
- * on 3D vehicle surfaces.
  */
 
 #include "raylib.h"
