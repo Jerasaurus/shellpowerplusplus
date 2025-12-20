@@ -8,6 +8,8 @@
 #define NOUSER
 #include <windows.h>
 #include <direct.h>
+#else
+#include <dirent.h>
 #endif
 
 #include "raylib.h"

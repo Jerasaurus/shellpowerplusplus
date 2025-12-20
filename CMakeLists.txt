@@ -36,8 +36,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE raylib)
 
 # Platform-specific settings
 if(WIN32)
-    # Prevent Windows API conflicts with raylib
-    target_compile_definitions(${PROJECT_NAME} PRIVATE NOGDI NOUSER)
+    # Windows-specific settings (NOGDI/NOUSER handled per-file in source)
 elseif(APPLE)
     target_link_libraries(${PROJECT_NAME} PRIVATE
         "-framework OpenGL"
@@ -72,10 +71,8 @@ else()
     target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra)
 endif()
 if(WIN32)
-    target_compile_definitions(${PROJECT_NAME} PRIVATE 
+    target_compile_definitions(${PROJECT_NAME} PRIVATE
         WIN32_LEAN_AND_MEAN
-        NOGDI 
-        NOUSER
         _CRT_SECURE_NO_WARNINGS
     )
 endif()
