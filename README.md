@@ -14,12 +14,14 @@ Downad the release for your computer over in [releases](https://github.com/Jeras
 ### 2) Linux
 
 ```bash
+cd Downloads # or wherever you downloaded the executable
 chmod +x shellpower-linux-x64
 ./shellpower-linux-x64
 ```
 ### 2) Mac
-
+Open Terminal Application
 ```bash
+cd Downloads # or wherever you downloaded the executable
 chmod +x shellpower-macos-arm64
 xattr -d com.apple.quarantine shellpower-macos-arm64
 ./shellpower-macos-arm64
