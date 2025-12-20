@@ -2,17 +2,7 @@
  * Solar Array Designer
  * Core application implementation
  */
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#define NOGDI
-#define NOUSER
-#include <windows.h>
-#include <direct.h>
-#else
-#include <dirent.h>
-#endif
 
-#include "raylib.h"
 #include "app.h"
 #include <math.h>
 #include <stdarg.h>
@@ -22,6 +12,19 @@
 #include <sys/stat.h>
 #include <time.h>
 #include "raygui.h"
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#define NOGDI
+#define NOUSER
+#include <direct.h>
+#include <windows.h>
+#else
+#include <dirent.h>
+#include <unistd.h>
+#endif
 
 //------------------------------------------------------------------------------
 // Cell Presets
