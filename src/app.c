@@ -2,6 +2,14 @@
  * Solar Array Designer
  * Core application implementation
  */
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOGDI
+#define NOUSER
+#include <windows.h>
+#include <direct.h>
+#endif
+
 #include "raylib.h"
 #include "app.h"
 #include <math.h>
@@ -12,14 +20,6 @@
 #include <sys/stat.h>
 #include <time.h>
 #include "raygui.h"
-
-#ifdef _WIN32
-#include <direct.h>
-#include <windows.h>
-#else
-#include <dirent.h>
-#include <unistd.h>
-#endif
 
 //------------------------------------------------------------------------------
 // Cell Presets
@@ -863,7 +863,7 @@ bool SaveModule(CellModule *module, const char *filename) {
     return true;
 }
 
-bool LoadModule(CellModule *module, const char *filename) {
+bool LoadAppModule(CellModule *module, const char *filename) {
     FILE *f = fopen(filename, "r");
     if (!f)
         return false;
@@ -935,7 +935,7 @@ void LoadAllModules(AppState *app) {
                 char filepath[MAX_PATH_LENGTH];
                 snprintf(filepath, sizeof(filepath), "%s\\%s", MODULES_DIRECTORY, fd.cFileName);
                 if (app->module_count < MAX_MODULES) {
-                    if (LoadModule(&app->modules[app->module_count], filepath)) {
+                    if (LoadAppModule(&app->modules[app->module_count], filepath)) {
                         app->module_count++;
                     }
                 }
@@ -953,7 +953,7 @@ void LoadAllModules(AppState *app) {
                 if (ext && strcmp(ext, ".json") == 0) {
                     char filepath[MAX_PATH_LENGTH];
                     snprintf(filepath, sizeof(filepath), "%s/%s", MODULES_DIRECTORY, entry->d_name);
-                    if (LoadModule(&app->modules[app->module_count], filepath)) {
+                    if (LoadAppModule(&app->modules[app->module_count], filepath)) {
                         app->module_count++;
                     }
                 }

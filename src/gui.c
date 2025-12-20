@@ -1,17 +1,22 @@
 /*
  * GUI implementation using raygui
  */
+
+ #ifdef _WIN32
+ #define WIN32_LEAN_AND_MEAN
+ #define NOGDI
+ #define NOUSER
+ #include <windows.h>
+ #include <commdlg.h>
+#endif
+
 #include "raylib.h"
 #include <stdio.h>
 #include <string.h>
 #include "app.h"
 #include "raygui.h"
 
-// For file dialogs
-#ifdef _WIN32
-#include <commdlg.h>
-#include <windows.h>
-#else
+#ifndef _WIN32
 #include <stdlib.h>
 #endif
 
