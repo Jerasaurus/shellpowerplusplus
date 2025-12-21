@@ -2,6 +2,7 @@
 Hello!
 
 WELCOME to shellpower plus plus
+This project is a crossplatform port of the orginal sscp [shellpower](https://github.com/sscp/shellpower) with additional features such as auto array layout
 <img width="1469" height="887" alt="Screenshot 2025-12-21 at 11 59 57 AM" src="https://github.com/user-attachments/assets/6af733d7-d40d-4f50-817b-1594add23813" />
 
 ## Installation
