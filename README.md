@@ -37,3 +37,5 @@ xattr -d com.apple.quarantine shellpower-macos-arm64
 6) Dont change any of the checkboxes from defaults and hit `Run Auto-Layout`
 7) Go over to simulate, and you can drag around the `hour` slider to see the array preformance at instantious points during the day.
 8) To get a time averaged sim, hit `Run Daily Simulation`
+## Credit
+Credit to DC for the orginal C# project! [https://github.com/sscp/shellpower](https://github.com/sscp/shellpower)
