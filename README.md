@@ -2,6 +2,7 @@
 Hello!
 
 WELCOME to shellpower plus plus
+<img width="1469" height="887" alt="Screenshot 2025-12-21 at 11 59 57 AM" src="https://github.com/user-attachments/assets/6af733d7-d40d-4f50-817b-1594add23813" />
 
 ## Installation
 Downad the release for your computer over in [releases](https://github.com/Jerasaurus/shellpowerplusplus/releases/latest)
