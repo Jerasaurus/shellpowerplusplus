@@ -25,6 +25,9 @@ endif()
 set(SOURCES
     src/main.c
     src/app.c
+    src/auto_layout.c
+    src/camera.c
+    src/stl_loader.c
     src/gui.c
     src/lib/tinyfiledialogs.c
     src/simulation/iv_trace.c
