@@ -4,6 +4,8 @@
  */
 
 #include "app.h"
+#include "simulation/iv_trace.h"
+#include "simulation/string_sim.h"
 #include <math.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -31,30 +33,47 @@
 //------------------------------------------------------------------------------
 // Cell Presets
 //------------------------------------------------------------------------------
-const CellPreset CELL_PRESETS[] = {{.name = "Maxeon Gen 3",
-                                    .width = 0.125f,
-                                    .height = 0.125f,
-                                    .efficiency = 0.227f,
-                                    .voc = 0.68f,
-                                    .isc = 6.24f,
-                                    .vmp = 0.58f,
-                                    .imp = 6.01f},
-                                   {.name = "Maxeon Gen 5",
-                                    .width = 0.125f,
-                                    .height = 0.125f,
-                                    .efficiency = 0.24f,
-                                    .voc = 0.70f,
-                                    .isc = 6.50f,
-                                    .vmp = 0.60f,
-                                    .imp = 6.20f},
-                                   {.name = "Generic Silicon",
-                                    .width = 0.156f,
-                                    .height = 0.156f,
-                                    .efficiency = 0.20f,
-                                    .voc = 0.64f,
-                                    .isc = 9.5f,
-                                    .vmp = 0.54f,
-                                    .imp = 9.0f}};
+const CellPreset CELL_PRESETS[] = {
+    {
+        .name = "Maxeon Gen 3 (ME3)",
+        .width = 0.125f,
+        .height = 0.125f,
+        .efficiency = 0.227f,
+        .voc = 0.686f,        // Open circuit voltage at STC
+        .isc = 6.27f,         // Short circuit current at STC
+        .vmp = 0.58f,         // Voltage at max power
+        .imp = 6.01f,         // Current at max power
+        .n_ideal = 1.26f,     // Diode ideality factor
+        .series_r = 0.003f,   // Series resistance (ohms)
+        .bypass_v_drop = 0.35f // Bypass diode voltage drop
+    },
+    {
+        .name = "Maxeon Gen 5",
+        .width = 0.125f,
+        .height = 0.125f,
+        .efficiency = 0.24f,
+        .voc = 0.70f,
+        .isc = 6.50f,
+        .vmp = 0.60f,
+        .imp = 6.20f,
+        .n_ideal = 1.2f,
+        .series_r = 0.003f,
+        .bypass_v_drop = 0.35f
+    },
+    {
+        .name = "Generic Silicon",
+        .width = 0.156f,
+        .height = 0.156f,
+        .efficiency = 0.20f,
+        .voc = 0.64f,
+        .isc = 9.5f,
+        .vmp = 0.54f,
+        .imp = 9.0f,
+        .n_ideal = 1.3f,
+        .series_r = 0.005f,
+        .bypass_v_drop = 0.7f
+    }
+};
 const int CELL_PRESET_COUNT = sizeof(CELL_PRESETS) / sizeof(CELL_PRESETS[0]);
 
 //------------------------------------------------------------------------------
@@ -135,7 +154,7 @@ void AppInit(AppState *app) {
 
     // Mesh
     app->mesh_loaded = false;
-    app->mesh_scale = 0.01f;
+    app->mesh_scale = 0.001f;
     app->mesh_rotation = (Vector3) {0, 0, 0};
 
     // Cells
@@ -169,6 +188,9 @@ void AppInit(AppState *app) {
 
     // UI
     app->hovered_cell_id = -1;
+    app->is_drag_selecting = false;
+    app->drag_start = (Vector2){0, 0};
+    app->drag_end = (Vector2){0, 0};
     SetStatus(app, "Welcome! Load a mesh file to begin.");
 
     // Camera
@@ -280,16 +302,18 @@ void CameraUpdate(CameraController *cam, AppState *app) {
         }
     }
 
-    // Arrow keys for rotation
-    float rotSpeed = 2.0f;
-    if (IsKeyDown(KEY_LEFT))
-        cam->azimuth -= rotSpeed;
-    if (IsKeyDown(KEY_RIGHT))
-        cam->azimuth += rotSpeed;
-    if (IsKeyDown(KEY_UP))
-        cam->elevation = Clampf(cam->elevation + rotSpeed, -89.0f, 89.0f);
-    if (IsKeyDown(KEY_DOWN))
-        cam->elevation = Clampf(cam->elevation - rotSpeed, -89.0f, 89.0f);
+    // Arrow keys for rotation (skip when editing text fields)
+    if (!app->gui_text_editing) {
+        float rotSpeed = 2.0f;
+        if (IsKeyDown(KEY_LEFT))
+            cam->azimuth -= rotSpeed;
+        if (IsKeyDown(KEY_RIGHT))
+            cam->azimuth += rotSpeed;
+        if (IsKeyDown(KEY_UP))
+            cam->elevation = Clampf(cam->elevation + rotSpeed, -89.0f, 89.0f);
+        if (IsKeyDown(KEY_DOWN))
+            cam->elevation = Clampf(cam->elevation - rotSpeed, -89.0f, 89.0f);
+    }
 
     CameraUpdatePosition(cam);
 }
@@ -330,7 +354,8 @@ typedef struct {
 
 static bool IsSTLFile(const char *path) {
     const char *ext = strrchr(path, '.');
-    if (!ext) return false;
+    if (!ext)
+        return false;
 #ifdef _WIN32
     return (_stricmp(ext, ".stl") == 0);
 #else
@@ -342,20 +367,24 @@ static bool IsSTLFile(const char *path) {
 static bool IsASCIISTL(FILE *file, long fileSize) {
     char header[6];
     fseek(file, 0, SEEK_SET);
-    if (fread(header, 1, 6, file) != 6) return false;
+    if (fread(header, 1, 6, file) != 6)
+        return false;
 
     // ASCII STL starts with "solid "
-    if (strncmp(header, "solid ", 6) != 0) return false;
+    if (strncmp(header, "solid ", 6) != 0)
+        return false;
 
     // Binary STL can also start with "solid" in header, so verify by file size
     // Binary format: 80 header + 4 count + (50 * triangles)
     fseek(file, 80, SEEK_SET);
     uint32_t triangleCount = 0;
-    if (fread(&triangleCount, sizeof(uint32_t), 1, file) != 1) return true; // Assume ASCII if can't read
+    if (fread(&triangleCount, sizeof(uint32_t), 1, file) != 1)
+        return true; // Assume ASCII if can't read
 
-    long expectedBinarySize = 84 + (long)triangleCount * 50;
+    long expectedBinarySize = 84 + (long) triangleCount * 50;
     // If file size matches binary format, it's binary despite "solid" header
-    if (fileSize == expectedBinarySize) return false;
+    if (fileSize == expectedBinarySize)
+        return false;
 
     return true; // ASCII format
 }
@@ -369,8 +398,10 @@ static uint32_t CountASCIITriangles(FILE *file) {
     while (fgets(line, sizeof(line), file)) {
         // Skip leading whitespace
         char *p = line;
-        while (*p == ' ' || *p == '\t') p++;
-        if (strncmp(p, "facet ", 6) == 0) count++;
+        while (*p == ' ' || *p == '\t')
+            p++;
+        if (strncmp(p, "facet ", 6) == 0)
+            count++;
     }
     return count;
 }
@@ -384,9 +415,9 @@ static Model LoadSTLASCII(const char *path, FILE *file, uint32_t triangleCount) 
     Mesh mesh = {0};
     mesh.vertexCount = triangleCount * 3;
     mesh.triangleCount = triangleCount;
-    mesh.vertices = (float *)RL_MALLOC(sizeof(float) * 3 * mesh.vertexCount);
-    mesh.normals = (float *)RL_MALLOC(sizeof(float) * 3 * mesh.vertexCount);
-    mesh.texcoords = (float *)RL_CALLOC(mesh.vertexCount * 2, sizeof(float));
+    mesh.vertices = (float *) RL_MALLOC(sizeof(float) * 3 * mesh.vertexCount);
+    mesh.normals = (float *) RL_MALLOC(sizeof(float) * 3 * mesh.vertexCount);
+    mesh.texcoords = (float *) RL_CALLOC(mesh.vertexCount * 2, sizeof(float));
 
     if (!mesh.vertices || !mesh.normals || !mesh.texcoords) {
         TraceLog(LOG_ERROR, "STL: Failed to allocate mesh memory");
@@ -404,7 +435,8 @@ static Model LoadSTLASCII(const char *path, FILE *file, uint32_t triangleCount) 
 
     while (fgets(line, sizeof(line), file) && triIndex < triangleCount) {
         char *p = line;
-        while (*p == ' ' || *p == '\t') p++;
+        while (*p == ' ' || *p == '\t')
+            p++;
 
         if (strncmp(p, "facet normal ", 13) == 0) {
             sscanf(p + 13, "%f %f %f", &nx, &ny, &nz);
@@ -422,7 +454,8 @@ static Model LoadSTLASCII(const char *path, FILE *file, uint32_t triangleCount) 
             mesh.normals[i + 2] = nz;
 
             vertexInFacet++;
-            if (vertexInFacet == 3) triIndex++;
+            if (vertexInFacet == 3)
+                triIndex++;
         }
     }
 
@@ -432,9 +465,9 @@ static Model LoadSTLASCII(const char *path, FILE *file, uint32_t triangleCount) 
     model.transform = MatrixIdentity();
     model.meshCount = 1;
     model.materialCount = 1;
-    model.meshes = (Mesh *)RL_MALLOC(sizeof(Mesh));
-    model.materials = (Material *)RL_MALLOC(sizeof(Material));
-    model.meshMaterial = (int *)RL_MALLOC(sizeof(int));
+    model.meshes = (Mesh *) RL_MALLOC(sizeof(Mesh));
+    model.materials = (Material *) RL_MALLOC(sizeof(Material));
+    model.meshMaterial = (int *) RL_MALLOC(sizeof(int));
     model.meshes[0] = mesh;
     model.materials[0] = LoadMaterialDefault();
     model.meshMaterial[0] = 0;
@@ -452,9 +485,9 @@ static Model LoadSTLBinary(const char *path, FILE *file, uint32_t triangleCount)
     Mesh mesh = {0};
     mesh.vertexCount = triangleCount * 3;
     mesh.triangleCount = triangleCount;
-    mesh.vertices = (float *)RL_MALLOC(sizeof(float) * 3 * mesh.vertexCount);
-    mesh.normals = (float *)RL_MALLOC(sizeof(float) * 3 * mesh.vertexCount);
-    mesh.texcoords = (float *)RL_CALLOC(mesh.vertexCount * 2, sizeof(float));
+    mesh.vertices = (float *) RL_MALLOC(sizeof(float) * 3 * mesh.vertexCount);
+    mesh.normals = (float *) RL_MALLOC(sizeof(float) * 3 * mesh.vertexCount);
+    mesh.texcoords = (float *) RL_CALLOC(mesh.vertexCount * 2, sizeof(float));
 
     if (!mesh.vertices || !mesh.normals || !mesh.texcoords) {
         TraceLog(LOG_ERROR, "STL: Failed to allocate mesh memory");
@@ -503,9 +536,9 @@ static Model LoadSTLBinary(const char *path, FILE *file, uint32_t triangleCount)
     model.transform = MatrixIdentity();
     model.meshCount = 1;
     model.materialCount = 1;
-    model.meshes = (Mesh *)RL_MALLOC(sizeof(Mesh));
-    model.materials = (Material *)RL_MALLOC(sizeof(Material));
-    model.meshMaterial = (int *)RL_MALLOC(sizeof(int));
+    model.meshes = (Mesh *) RL_MALLOC(sizeof(Mesh));
+    model.materials = (Material *) RL_MALLOC(sizeof(Material));
+    model.meshMaterial = (int *) RL_MALLOC(sizeof(int));
     model.meshes[0] = mesh;
     model.materials[0] = LoadMaterialDefault();
     model.meshMaterial[0] = 0;
@@ -704,7 +737,7 @@ Vector3 CellGetWorldTangent(AppState *app, SolarCell *cell) {
     Vector3 worldTangent = Vector3Transform(cell->local_tangent, dirTransform);
     return Vector3Normalize(worldTangent);
 }
-int PlaceCell(AppState *app, Vector3 world_position, Vector3 world_normal) {
+int PlaceCellEx(AppState *app, Vector3 world_position, Vector3 world_normal, bool check_overlap) {
     if (app->cell_count >= MAX_CELLS) {
         SetStatus(app, "Maximum cell count reached");
         return -1;
@@ -716,16 +749,18 @@ int PlaceCell(AppState *app, Vector3 world_position, Vector3 world_normal) {
         return -1;
     }
 
-    // Check for overlapping cells (in world space)
-    CellPreset *preset = (CellPreset *) &CELL_PRESETS[app->selected_preset];
-    float minDist = fmaxf(preset->width, preset->height) * MIN_CELL_DISTANCE_FACTOR;
+    // Check for overlapping cells (in world space) - skip if check_overlap is false
+    if (check_overlap) {
+        CellPreset *preset = (CellPreset *) &CELL_PRESETS[app->selected_preset];
+        float minDist = fmaxf(preset->width, preset->height) * MIN_CELL_DISTANCE_FACTOR;
 
-    for (int i = 0; i < app->cell_count; i++) {
-        Vector3 existingWorldPos = CellGetWorldPosition(app, &app->cells[i]);
-        float dist = Vector3Distance(world_position, existingWorldPos);
-        if (dist < minDist) {
-            SetStatus(app, "Too close to existing cell");
-            return -1;
+        for (int i = 0; i < app->cell_count; i++) {
+            Vector3 existingWorldPos = CellGetWorldPosition(app, &app->cells[i]);
+            float dist = Vector3Distance(world_position, existingWorldPos);
+            if (dist < minDist) {
+                SetStatus(app, "Too close to existing cell");
+                return -1;
+            }
         }
     }
 
@@ -769,6 +804,12 @@ int PlaceCell(AppState *app, Vector3 world_position, Vector3 world_normal) {
     SetStatus(app, "Placed cell #%d", cell->id);
     return cell->id;
 }
+
+// Wrapper for auto-layout (checks overlap)
+int PlaceCell(AppState *app, Vector3 world_position, Vector3 world_normal) {
+    return PlaceCellEx(app, world_position, world_normal, true);
+}
+
 void RemoveCell(AppState *app, int cell_id) {
     int idx = -1;
     for (int i = 0; i < app->cell_count; i++) {
@@ -1006,6 +1047,139 @@ void ClearAllWiring(AppState *app) {
     SetStatus(app, "Cleared all wiring");
 }
 
+// Helper struct for sorting cells in snake pattern
+typedef struct {
+    int cell_index;
+    float x;
+    float z;
+} CellSortEntry;
+
+// Comparison function for sorting by Z (row), then X
+static int CompareCellsByRow(const void *a, const void *b) {
+    const CellSortEntry *ca = (const CellSortEntry *)a;
+    const CellSortEntry *cb = (const CellSortEntry *)b;
+
+    // Compare Z first (rows) - smaller Z = earlier row
+    if (ca->z < cb->z - 0.01f) return -1;
+    if (ca->z > cb->z + 0.01f) return 1;
+
+    // Same row - compare X
+    if (ca->x < cb->x) return -1;
+    if (ca->x > cb->x) return 1;
+    return 0;
+}
+
+int AddCellsInRectToString(AppState *app, Vector2 screenMin, Vector2 screenMax) {
+    // Normalize rectangle bounds
+    float minX = fminf(screenMin.x, screenMax.x);
+    float maxX = fmaxf(screenMin.x, screenMax.x);
+    float minY = fminf(screenMin.y, screenMax.y);
+    float maxY = fmaxf(screenMin.y, screenMax.y);
+
+    // Start new string if needed
+    if (app->active_string_id < 0) {
+        if (StartNewString(app) < 0)
+            return 0;
+    }
+
+    // First pass: collect all cells in the selection rectangle
+    CellSortEntry *selected = (CellSortEntry *)malloc(app->cell_count * sizeof(CellSortEntry));
+    int selectedCount = 0;
+
+    for (int i = 0; i < app->cell_count; i++) {
+        SolarCell *cell = &app->cells[i];
+
+        // Skip already wired cells
+        if (cell->string_id >= 0)
+            continue;
+
+        // Get world position and project to screen
+        Vector3 worldPos = CellGetWorldPosition(app, cell);
+        Vector2 screenPos = GetWorldToScreen(worldPos, app->cam.camera);
+
+        // Check if within selection rectangle
+        if (screenPos.x >= minX && screenPos.x <= maxX &&
+            screenPos.y >= minY && screenPos.y <= maxY) {
+            selected[selectedCount].cell_index = i;
+            selected[selectedCount].x = worldPos.x;
+            selected[selectedCount].z = worldPos.z;
+            selectedCount++;
+        }
+    }
+
+    if (selectedCount == 0) {
+        free(selected);
+        return 0;
+    }
+
+    // Sort cells by Z (row), then X
+    qsort(selected, selectedCount, sizeof(CellSortEntry), CompareCellsByRow);
+
+    // Determine row spacing from cell preset
+    CellPreset *preset = (CellPreset *)&CELL_PRESETS[app->selected_preset];
+    float rowThreshold = preset->height * 1.5f; // Cells within 1.5x cell height are same row
+
+    // Apply snake pattern: reverse every other row
+    int rowStart = 0;
+    int rowIndex = 0;
+    float currentRowZ = selected[0].z;
+
+    for (int i = 0; i <= selectedCount; i++) {
+        // Check if we've moved to a new row or reached the end
+        bool newRow = (i == selectedCount) ||
+                      (fabsf(selected[i].z - currentRowZ) > rowThreshold);
+
+        if (newRow && i > rowStart) {
+            // Reverse this row if it's an odd-numbered row (snake pattern)
+            if (rowIndex % 2 == 1) {
+                int left = rowStart;
+                int right = i - 1;
+                while (left < right) {
+                    CellSortEntry temp = selected[left];
+                    selected[left] = selected[right];
+                    selected[right] = temp;
+                    left++;
+                    right--;
+                }
+            }
+
+            rowIndex++;
+            rowStart = i;
+            if (i < selectedCount) {
+                currentRowZ = selected[i].z;
+            }
+        }
+    }
+
+    // Now add cells to string in snake order
+    int added = 0;
+    CellString *str = NULL;
+    for (int s = 0; s < app->string_count; s++) {
+        if (app->strings[s].id == app->active_string_id) {
+            str = &app->strings[s];
+            break;
+        }
+    }
+
+    if (str) {
+        for (int i = 0; i < selectedCount && str->cell_count < MAX_CELLS_PER_STRING; i++) {
+            SolarCell *cell = &app->cells[selected[i].cell_index];
+            cell->string_id = str->id;
+            cell->order_in_string = str->cell_count;
+            str->cell_ids[str->cell_count++] = cell->id;
+            added++;
+        }
+    }
+
+    free(selected);
+
+    if (added > 0) {
+        SetStatus(app, "Added %d cells to string #%d (snake pattern)", added, app->active_string_id);
+    }
+
+    return added;
+}
+
 //------------------------------------------------------------------------------
 // Modules
 //------------------------------------------------------------------------------
@@ -1119,6 +1293,7 @@ bool LoadAppModule(CellModule *module, const char *filename) {
     // Simple JSON parsing (not robust, but works for our format)
     char line[256];
     module->cell_count = 0;
+    int parsedCellCount = 0;  // Running counter for cells as we parse them
 
     while (fgets(line, sizeof(line), f)) {
         if (strstr(line, "\"name\":")) {
@@ -1143,26 +1318,29 @@ bool LoadAppModule(CellModule *module, const char *filename) {
         } else if (strstr(line, "\"cell_count\":")) {
             sscanf(line, " \"cell_count\": %d", &module->cell_count);
         } else if (strstr(line, "\"offset\":")) {
-            int idx = module->cell_count;
-            if (idx < MAX_CELLS_PER_MODULE) {
+            if (parsedCellCount < MAX_CELLS_PER_MODULE) {
                 float x, y, z;
                 char *bracket = strchr(line, '[');
                 if (bracket && sscanf(bracket, "[%f, %f, %f]", &x, &y, &z) == 3) {
-                    module->cells[idx].offset = (Vector3) {x, y, z};
+                    module->cells[parsedCellCount].offset = (Vector3) {x, y, z};
                 }
             }
         } else if (strstr(line, "\"normal\":")) {
-            // Find which cell this belongs to by counting previous offsets
-            static int cellIdx = -1;
-            cellIdx++;
-            if (cellIdx < MAX_CELLS_PER_MODULE) {
+            // Normal follows offset for same cell
+            if (parsedCellCount < MAX_CELLS_PER_MODULE) {
                 float x, y, z;
                 char *bracket = strchr(line, '[');
                 if (bracket && sscanf(bracket, "[%f, %f, %f]", &x, &y, &z) == 3) {
-                    module->cells[cellIdx].normal = (Vector3) {x, y, z};
+                    module->cells[parsedCellCount].normal = (Vector3) {x, y, z};
                 }
             }
+            parsedCellCount++;  // Move to next cell after parsing both offset and normal
         }
+    }
+
+    // Use parsed count if cell_count wasn't in file or was wrong
+    if (parsedCellCount > 0 && parsedCellCount != module->cell_count) {
+        module->cell_count = parsedCellCount;
     }
 
     fclose(f);
@@ -1335,7 +1513,6 @@ bool IsCellFootprintValid(AppState *app, Vector3 position, Vector3 normal, float
 
     float tolerance = 0.05f; // 5cm tolerance for surface matching
 
-    static int debug_count = 0;
     for (int i = 0; i < 9; i++) {
         Vector3 checkPos = checkPoints[i];
 
@@ -1369,19 +1546,20 @@ bool IsCellFootprintValid(AppState *app, Vector3 position, Vector3 normal, float
         }
 
         // 2. Check for mesh geometry ABOVE this point that would clip the cell
-        // DISABLED: This check fails on meshes with double-sided faces or overlapping geometry
-        // TODO: Re-enable with better logic that ignores the surface we're placing on
-        /*
+        // Cast ray straight up (world Y) to detect canopy or other obstructions
         Ray rayUp;
-        rayUp.position = Vector3Add(checkPos, Vector3Scale(normal, 0.01f));
-        rayUp.direction = normal;
+        rayUp.position = Vector3Add(checkPos, (Vector3){0, 0.01f, 0}); // Start slightly above surface
+        rayUp.direction = (Vector3){0, 1, 0}; // Straight up in world space
+
         RayCollision hitUp = GetRayCollisionMesh(rayUp, app->vehicle_mesh, app->vehicle_model.transform);
-        float cellThickness = 0.02f;
-        if (hitUp.hit && hitUp.distance < cellThickness) {
-            if (debug_count++ < 20) printf("REJECT point %d: clearance fail, hit at %.4f\n", i, hitUp.distance);
+
+        // If we hit something above within a reasonable distance, and it's not the same surface
+        // we're placing on (check by comparing hit height to our position height)
+        float clearance_required = 0.05f; // 5cm clearance above cell
+        if (hitUp.hit && hitUp.distance < clearance_required) {
+            // Something is directly above - likely the canopy or an overhang
             return false;
         }
-        */
     }
 
     return true;
@@ -2095,7 +2273,6 @@ void RunStaticSimulation(AppState *app) {
     CellPreset *preset = (CellPreset *) &CELL_PRESETS[app->selected_preset];
 
     // Calculate sun position
-
     app->sim_results.sun_direction =
             CalculateSunDirection(&app->sim_settings, &app->sim_results.sun_altitude, &app->sim_results.sun_azimuth);
 
@@ -2105,46 +2282,153 @@ void RunStaticSimulation(AppState *app) {
     app->sim_results.total_power = 0;
     app->sim_results.shaded_count = 0;
 
-    // Reset string powers
+    // Reset string data
     for (int s = 0; s < app->string_count; s++) {
         app->strings[s].total_power = 0;
+        app->strings[s].string_current = 0;
+        app->strings[s].string_voltage = 0;
+        app->strings[s].bypassed_count = 0;
+        app->strings[s].power_ideal = 0;
     }
 
-    // Calculate for each cell
+    // First pass: Calculate each cell's conditions (shading, current, etc)
     for (int i = 0; i < app->cell_count; i++) {
         SolarCell *cell = &app->cells[i];
+        cell->is_bypassed = false;
 
         if (!app->sim_results.is_daytime) {
             cell->is_shaded = true;
             cell->power_output = 0;
+            cell->current_output = 0;
+            cell->voltage_output = 0;
         } else {
             cell->is_shaded = CheckCellShading(app, cell, app->sim_results.sun_direction);
-            cell->power_output =
-                    CalculateCellPower(app, cell, app->sim_results.sun_direction, preset, app->sim_settings.irradiance);
+
+            // Calculate cell's photo-generated current
+            Vector3 worldNormal = CellGetWorldNormal(app, cell);
+            float cosAngle = Vector3DotProduct(worldNormal, app->sim_results.sun_direction);
+            cosAngle = fmaxf(0.0f, cosAngle);
+
+            if (cell->is_shaded || cosAngle <= 0) {
+                cell->current_output = 0;
+                cell->voltage_output = 0;
+                cell->power_output = 0;
+            } else {
+                // Calculate irradiance ratio (actual vs STC)
+                float irradiance_ratio = (app->sim_settings.irradiance / 1000.0f) * cosAngle;
+                cell->current_output = preset->isc * irradiance_ratio;
+                cell->voltage_output = preset->vmp; // Will be refined for strings
+                cell->power_output = cell->current_output * cell->voltage_output;
+            }
         }
 
         if (cell->is_shaded)
             app->sim_results.shaded_count++;
-        app->sim_results.total_power += cell->power_output;
+    }
 
-        // Add to string power
-        if (cell->string_id >= 0) {
-            for (int s = 0; s < app->string_count; s++) {
-                if (app->strings[s].id == cell->string_id) {
-                    app->strings[s].total_power += cell->power_output;
-                    break;
+    // Second pass: Calculate string power with series constraints
+    float total_string_power = 0;
+    float total_unwired_power = 0;
+
+    for (int s = 0; s < app->string_count; s++) {
+        CellString *str = &app->strings[s];
+        if (str->cell_count == 0) continue;
+
+        // Create IV traces for each cell in the string
+        IVTrace cell_traces[MAX_CELLS_PER_STRING];
+        bool has_bypass[MAX_CELLS_PER_STRING];
+        int cell_indices[MAX_CELLS_PER_STRING]; // Map back to app->cells indices
+        int string_cell_count = 0;
+
+        // Build cell traces for this string
+        for (int c = 0; c < app->cell_count && string_cell_count < str->cell_count; c++) {
+            if (app->cells[c].string_id == str->id) {
+                SolarCell *cell = &app->cells[c];
+
+                // Calculate irradiance ratio for this cell
+                float irradiance_ratio = 0;
+                if (!cell->is_shaded) {
+                    Vector3 worldNormal = CellGetWorldNormal(app, cell);
+                    float cosAngle = Vector3DotProduct(worldNormal, app->sim_results.sun_direction);
+                    cosAngle = fmaxf(0.0f, cosAngle);
+                    irradiance_ratio = (app->sim_settings.irradiance / 1000.0f) * cosAngle;
                 }
+
+                // Create full IV trace for this cell
+                IVTrace_CreateCellTrace(&cell_traces[string_cell_count],
+                                        preset->voc, preset->isc, preset->n_ideal,
+                                        preset->series_r, irradiance_ratio);
+
+                has_bypass[string_cell_count] = cell->has_bypass_diode;
+                cell_indices[string_cell_count] = c;
+                string_cell_count++;
             }
         }
+
+        // Calculate string IV curve and find MPP using full model
+        StringSimResult sim_result;
+        StringSim_CalcStringIV(cell_traces, string_cell_count,
+                               preset->bypass_v_drop, has_bypass, &sim_result);
+
+        // Update string results from simulation
+        str->total_power = sim_result.power_out;
+        str->string_current = sim_result.current;
+        str->string_voltage = sim_result.voltage;
+        str->bypassed_count = sim_result.cells_bypassed;
+
+        // Update individual cell states based on string operating point
+        for (int i = 0; i < string_cell_count; i++) {
+            int c = cell_indices[i];
+            SolarCell *cell = &app->cells[c];
+
+            // Determine if cell is bypassed at MPP current
+            if (sim_result.current >= cell_traces[i].Isc && has_bypass[i]) {
+                cell->is_bypassed = true;
+                cell->voltage_output = -preset->bypass_v_drop;
+                cell->power_output = sim_result.current * cell->voltage_output;
+            } else {
+                cell->is_bypassed = false;
+                // Interpolate voltage from cell's IV trace at string current
+                cell->voltage_output = IVTrace_InterpV(&cell_traces[i], sim_result.current);
+                cell->power_output = sim_result.current * cell->voltage_output;
+            }
+        }
+
+        // Calculate ideal power (all cells in full sun)
+        str->power_ideal = string_cell_count * preset->vmp * preset->imp;
+
+        total_string_power += sim_result.power_out;
     }
+
+    // Add power from unwired cells (they contribute individually)
+    for (int i = 0; i < app->cell_count; i++) {
+        if (app->cells[i].string_id < 0) {
+            // Unwired cell - use simple power calculation
+            app->cells[i].power_output =
+                CalculateCellPower(app, &app->cells[i], app->sim_results.sun_direction, preset, app->sim_settings.irradiance);
+            total_unwired_power += app->cells[i].power_output;
+        }
+    }
+
+    // Total power is sum of string power and unwired cell power
+    app->sim_results.total_power = total_string_power + total_unwired_power;
 
     app->sim_results.shaded_percentage =
             (app->cell_count > 0) ? (100.0f * app->sim_results.shaded_count / app->cell_count) : 0;
 
     app->sim_run = true;
 
-    SetStatus(app, "Simulation: %.1fW total, %.1f%% shaded", app->sim_results.total_power,
-              app->sim_results.shaded_percentage);
+    if (app->string_count > 0) {
+        int total_bypassed = 0;
+        for (int s = 0; s < app->string_count; s++) {
+            total_bypassed += app->strings[s].bypassed_count;
+        }
+        SetStatus(app, "Simulation: %.1fW (%.1f%% shaded, %d bypassed)",
+                  app->sim_results.total_power, app->sim_results.shaded_percentage, total_bypassed);
+    } else {
+        SetStatus(app, "Simulation: %.1fW total, %.1f%% shaded",
+                  app->sim_results.total_power, app->sim_results.shaded_percentage);
+    }
 }
 void RunTimeSimulationAnimated(AppState *app) {
     if (app->cell_count == 0 || !app->mesh_loaded) {
@@ -2239,6 +2523,8 @@ void RunTimeSimulationAnimated(AppState *app) {
 
             float instant_power = 0.0f;
 
+            // First pass: determine shading and irradiance for each cell
+            float *cell_irradiance_ratio = (float *)calloc(app->cell_count, sizeof(float));
             for (int c = 0; c < app->cell_count; c++) {
                 SolarCell *cell = &app->cells[c];
                 Vector3 pos = CellGetWorldPosition(app, cell);
@@ -2250,7 +2536,8 @@ void RunTimeSimulationAnimated(AppState *app) {
                 if (facing <= 0) {
                     shaded_samples++;
                     cell->is_shaded = true;
-                    cell->power_output = 0;
+                    cell->current_output = 0;
+                    cell_irradiance_ratio[c] = 0;
                     continue;
                 }
 
@@ -2261,20 +2548,72 @@ void RunTimeSimulationAnimated(AppState *app) {
                 if (hit.hit && hit.distance > 0.02f) {
                     shaded_samples++;
                     cell->is_shaded = true;
-                    cell->power_output = 0;
+                    cell->current_output = 0;
+                    cell_irradiance_ratio[c] = 0;
                     continue;
                 }
 
                 cell->is_shaded = false;
-                float area = preset->width * preset->height;
-                float power_w = effective_irradiance * area * facing * preset->efficiency;
-
-                instant_power += power_w;
-                cell->power_output = power_w;
-
-                // Accumulate this cell's power for this time step (will average over headings)
-                cell_power_this_timestep[c] += power_w;
+                cell_irradiance_ratio[c] = (effective_irradiance / 1000.0f) * facing;
+                cell->current_output = preset->isc * cell_irradiance_ratio[c];
             }
+
+            // Second pass: calculate string power using IV trace model
+            for (int s = 0; s < app->string_count; s++) {
+                CellString *str = &app->strings[s];
+                if (str->cell_count == 0) continue;
+
+                // Create IV traces for each cell in the string
+                IVTrace cell_traces[MAX_CELLS_PER_STRING];
+                bool has_bypass[MAX_CELLS_PER_STRING];
+                int cell_indices[MAX_CELLS_PER_STRING];
+                int string_cell_count = 0;
+
+                for (int c = 0; c < app->cell_count && string_cell_count < str->cell_count; c++) {
+                    if (app->cells[c].string_id == str->id) {
+                        IVTrace_CreateCellTrace(&cell_traces[string_cell_count],
+                                                preset->voc, preset->isc, preset->n_ideal,
+                                                preset->series_r, cell_irradiance_ratio[c]);
+                        has_bypass[string_cell_count] = app->cells[c].has_bypass_diode;
+                        cell_indices[string_cell_count] = c;
+                        string_cell_count++;
+                    }
+                }
+
+                // Calculate string IV and find MPP
+                StringSimResult sim_result;
+                StringSim_CalcStringIV(cell_traces, string_cell_count,
+                                       preset->bypass_v_drop, has_bypass, &sim_result);
+
+                instant_power += sim_result.power_out;
+
+                // Update cell power outputs based on string operating point
+                for (int i = 0; i < string_cell_count; i++) {
+                    int c = cell_indices[i];
+                    if (sim_result.current >= cell_traces[i].Isc && has_bypass[i]) {
+                        app->cells[c].power_output = sim_result.current * (-preset->bypass_v_drop);
+                    } else {
+                        float v = IVTrace_InterpV(&cell_traces[i], sim_result.current);
+                        app->cells[c].power_output = sim_result.current * v;
+                    }
+                    cell_power_this_timestep[c] += app->cells[c].power_output;
+                }
+            }
+
+            // Third pass: unwired cells use simple calculation
+            for (int c = 0; c < app->cell_count; c++) {
+                if (app->cells[c].string_id < 0 && !app->cells[c].is_shaded) {
+                    float area = preset->width * preset->height;
+                    float power_w = effective_irradiance * area * cell_irradiance_ratio[c] * preset->efficiency / (effective_irradiance / 1000.0f);
+                    // Simplified: power = irradiance * area * cos(angle) * efficiency
+                    power_w = cell_irradiance_ratio[c] * 1000.0f * area * preset->efficiency;
+                    instant_power += power_w;
+                    app->cells[c].power_output = power_w;
+                    cell_power_this_timestep[c] += power_w;
+                }
+            }
+
+            free(cell_irradiance_ratio);
 
             // Track peak instantaneous power
             if (instant_power > peak_power) {
@@ -2466,14 +2805,16 @@ void AppUpdate(AppState *app) {
                     if (cell_id >= 0) {
                         RemoveCell(app, cell_id);
                     } else {
-                        // Try to place new cell
+                        // Try to place new cell (no overlap check for manual placement)
                         RayCollision hit = GetRayCollisionMesh(ray, app->vehicle_mesh, app->vehicle_model.transform);
                         if (hit.hit) {
-                            PlaceCell(app, hit.point, hit.normal);
+                            PlaceCellEx(app, hit.point, hit.normal, false);
                         }
                     }
                 }
             } else if (app->mode == MODE_WIRING) {
+                // Single cell click to add to string
+                Ray ray = GetMouseRay(mouse, app->cam.camera);
                 int cell_id = FindCellNearRay(app, ray, NULL);
                 if (cell_id >= 0) {
                     AddCellToString(app, cell_id);
@@ -2498,23 +2839,95 @@ void AppUpdate(AppState *app) {
 void DrawCell(AppState *app, SolarCell *cell) {
     CellPreset *preset = (CellPreset *) &CELL_PRESETS[app->selected_preset];
 
-    // Determine color
+    // Determine color based on visualization mode
     Color color = COLOR_CELL_UNWIRED;
 
-    if (app->sim_run && cell->is_shaded) {
-        color = COLOR_CELL_SHADED;
-    } else if (app->sim_run && app->sim_results.total_power > 0) {
-        // Color by power output (red to green)
-        float maxPower = preset->width * preset->height * preset->efficiency * app->sim_settings.irradiance;
-        float ratio = cell->power_output / maxPower;
-        color = LerpColor(RED, GREEN, ratio);
-        color.a = 230;
-    } else if (cell->string_id >= 0) {
-        // Use string color
-        for (int s = 0; s < app->string_count; s++) {
-            if (app->strings[s].id == cell->string_id) {
-                color = app->strings[s].color;
+    if (app->sim_run) {
+        switch (app->vis_mode) {
+            case VIS_MODE_CELL_FLUX:
+                // Color by cell irradiance flux (red=low, green=high)
+                if (cell->is_shaded) {
+                    color = COLOR_CELL_SHADED;
+                } else {
+                    // Calculate flux as irradiance * cos(angle to sun)
+                    Vector3 worldNormal = CellGetWorldNormal(app, cell);
+                    float cosAngle = Vector3DotProduct(worldNormal, app->sim_results.sun_direction);
+                    float ratio = Clampf(cosAngle, 0, 1);
+                    color = LerpColor(RED, GREEN, ratio);
+                    color.a = 230;
+                }
                 break;
+
+            case VIS_MODE_CELL_CURRENT:
+                // Color by cell current output (blue=low, yellow=high)
+                if (cell->is_shaded) {
+                    color = COLOR_CELL_SHADED;
+                } else {
+                    float ratio = (preset->isc > 0) ? (cell->current_output / preset->isc) : 0;
+                    ratio = Clampf(ratio, 0, 1);
+                    color = LerpColor(BLUE, YELLOW, ratio);
+                    color.a = 230;
+                }
+                break;
+
+            case VIS_MODE_SHADING:
+                // Show shaded vs unshaded
+                if (cell->is_shaded) {
+                    color = (Color){80, 80, 80, 230}; // Dark gray for shaded
+                } else {
+                    color = (Color){255, 220, 100, 230}; // Yellow for sunlit
+                }
+                break;
+
+            case VIS_MODE_BYPASS:
+                // Highlight bypassed cells
+                if (cell->is_bypassed) {
+                    color = (Color){255, 100, 100, 230}; // Red for bypassed
+                } else if (cell->is_shaded) {
+                    color = COLOR_CELL_SHADED;
+                } else if (cell->string_id >= 0) {
+                    color = (Color){100, 200, 100, 230}; // Green for active in string
+                } else {
+                    color = COLOR_CELL_UNWIRED;
+                }
+                break;
+
+            case VIS_MODE_STRING_COLOR:
+            default:
+                // Color by string power production (green=max, red=no power)
+                if (cell->string_id >= 0) {
+                    // Find the string and calculate power ratio
+                    for (int s = 0; s < app->string_count; s++) {
+                        if (app->strings[s].id == cell->string_id) {
+                            CellString *str = &app->strings[s];
+                            // Calculate max possible string power
+                            float maxStringPower = str->cell_count * preset->width * preset->height *
+                                                   preset->efficiency * app->sim_settings.irradiance;
+                            float ratio = (maxStringPower > 0) ? (str->total_power / maxStringPower) : 0;
+                            ratio = Clampf(ratio, 0, 1);
+                            color = LerpColor(RED, GREEN, ratio);
+                            color.a = 230;
+                            break;
+                        }
+                    }
+                } else {
+                    // Unwired cell - show individual cell power
+                    float maxPower = preset->width * preset->height * preset->efficiency * app->sim_settings.irradiance;
+                    float ratio = (maxPower > 0) ? (cell->power_output / maxPower) : 0;
+                    ratio = Clampf(ratio, 0, 1);
+                    color = LerpColor(RED, GREEN, ratio);
+                    color.a = 230;
+                }
+                break;
+        }
+    } else {
+        // No simulation run yet - show string colors or default
+        if (cell->string_id >= 0) {
+            for (int s = 0; s < app->string_count; s++) {
+                if (app->strings[s].id == cell->string_id) {
+                    color = app->strings[s].color;
+                    break;
+                }
             }
         }
     }
@@ -2576,6 +2989,51 @@ void DrawWiring(AppState *app) {
         for (int i = 0; i < str->cell_count - 1; i++) {
             DrawLine3D(positions[i], positions[i + 1], str->color);
         }
+    }
+}
+
+void DrawSelectionRect(AppState *app) {
+    if (!app->is_drag_selecting)
+        return;
+
+    // Get normalized rectangle bounds
+    float minX = fminf(app->drag_start.x, app->drag_end.x);
+    float maxX = fmaxf(app->drag_start.x, app->drag_end.x);
+    float minY = fminf(app->drag_start.y, app->drag_end.y);
+    float maxY = fmaxf(app->drag_start.y, app->drag_end.y);
+
+    float width = maxX - minX;
+    float height = maxY - minY;
+
+    // Draw semi-transparent fill
+    Color fillColor = {100, 150, 255, 50};
+    DrawRectangle((int)minX, (int)minY, (int)width, (int)height, fillColor);
+
+    // Draw border
+    Color borderColor = {50, 100, 255, 200};
+    DrawRectangleLines((int)minX, (int)minY, (int)width, (int)height, borderColor);
+
+    // Count cells in selection for preview
+    int count = 0;
+    for (int i = 0; i < app->cell_count; i++) {
+        SolarCell *cell = &app->cells[i];
+        if (cell->string_id >= 0)
+            continue;
+
+        Vector3 worldPos = CellGetWorldPosition(app, cell);
+        Vector2 screenPos = GetWorldToScreen(worldPos, app->cam.camera);
+
+        if (screenPos.x >= minX && screenPos.x <= maxX &&
+            screenPos.y >= minY && screenPos.y <= maxY) {
+            count++;
+        }
+    }
+
+    // Show count near cursor
+    if (count > 0) {
+        char countText[32];
+        snprintf(countText, sizeof(countText), "%d cells", count);
+        DrawText(countText, (int)app->drag_end.x + 10, (int)app->drag_end.y + 10, 16, borderColor);
     }
 }
 
@@ -2754,6 +3212,368 @@ void DrawSunIndicator(AppState *app) {
     DrawLine3D(sunPos, center, (Color) {255, 255, 0, 150});
 }
 
+static void DrawHeightBoundsPlanes(AppState *app, int dragging_bound) {
+    float minX = app->mesh_bounds.min.x - 0.5f;
+    float maxX = app->mesh_bounds.max.x + 0.5f;
+    float minZ = app->mesh_bounds.min.z - 0.5f;
+    float maxZ = app->mesh_bounds.max.z + 0.5f;
+
+    float minY = app->auto_layout.min_height;
+    float maxY = app->auto_layout.max_height;
+
+    // Colors for the height planes
+    Color minColor = (Color) {0, 150, 255, 100}; // Blue for min
+    Color maxColor = (Color) {255, 100, 0, 100}; // Orange for max
+    Color minLineColor = (Color) {0, 100, 200, 255};
+    Color maxLineColor = (Color) {200, 80, 0, 255};
+
+    // Highlight if being dragged
+    if (dragging_bound == 1) {
+        minColor = (Color) {0, 200, 255, 150};
+        minLineColor = (Color) {0, 255, 255, 255};
+    } else if (dragging_bound == 2) {
+        maxColor = (Color) {255, 150, 0, 150};
+        maxLineColor = (Color) {255, 200, 0, 255};
+    }
+
+    // Draw min height plane
+    DrawTriangle3D((Vector3) {minX, minY, minZ}, (Vector3) {maxX, minY, minZ}, (Vector3) {maxX, minY, maxZ}, minColor);
+    DrawTriangle3D((Vector3) {minX, minY, minZ}, (Vector3) {maxX, minY, maxZ}, (Vector3) {minX, minY, maxZ}, minColor);
+
+    // Draw max height plane
+    DrawTriangle3D((Vector3) {minX, maxY, minZ}, (Vector3) {maxX, maxY, maxZ}, (Vector3) {maxX, maxY, minZ}, maxColor);
+    DrawTriangle3D((Vector3) {minX, maxY, minZ}, (Vector3) {minX, maxY, maxZ}, (Vector3) {maxX, maxY, maxZ}, maxColor);
+
+    // Draw border lines for min plane
+    DrawLine3D((Vector3) {minX, minY, minZ}, (Vector3) {maxX, minY, minZ}, minLineColor);
+    DrawLine3D((Vector3) {maxX, minY, minZ}, (Vector3) {maxX, minY, maxZ}, minLineColor);
+    DrawLine3D((Vector3) {maxX, minY, maxZ}, (Vector3) {minX, minY, maxZ}, minLineColor);
+    DrawLine3D((Vector3) {minX, minY, maxZ}, (Vector3) {minX, minY, minZ}, minLineColor);
+
+    // Draw border lines for max plane
+    DrawLine3D((Vector3) {minX, maxY, minZ}, (Vector3) {maxX, maxY, minZ}, maxLineColor);
+    DrawLine3D((Vector3) {maxX, maxY, minZ}, (Vector3) {maxX, maxY, maxZ}, maxLineColor);
+    DrawLine3D((Vector3) {maxX, maxY, maxZ}, (Vector3) {minX, maxY, maxZ}, maxLineColor);
+    DrawLine3D((Vector3) {minX, maxY, maxZ}, (Vector3) {minX, maxY, minZ}, maxLineColor);
+
+    // Draw vertical lines connecting the planes at corners
+    Color vertColor = (Color) {100, 100, 100, 150};
+    DrawLine3D((Vector3) {minX, minY, minZ}, (Vector3) {minX, maxY, minZ}, vertColor);
+    DrawLine3D((Vector3) {maxX, minY, minZ}, (Vector3) {maxX, maxY, minZ}, vertColor);
+    DrawLine3D((Vector3) {maxX, minY, maxZ}, (Vector3) {maxX, maxY, maxZ}, vertColor);
+    DrawLine3D((Vector3) {minX, minY, maxZ}, (Vector3) {minX, maxY, maxZ}, vertColor);
+}
+
+void RunHeightBoundsEditor(AppState *app) {
+    if (!app->mesh_loaded) {
+        SetStatus(app, "Load a mesh first");
+        return;
+    }
+
+    // Calculate mesh center and size for camera positioning
+    Vector3 center = {(app->mesh_bounds.min.x + app->mesh_bounds.max.x) / 2,
+                      (app->mesh_bounds.min.y + app->mesh_bounds.max.y) / 2,
+                      (app->mesh_bounds.min.z + app->mesh_bounds.max.z) / 2};
+    Vector3 size = Vector3Subtract(app->mesh_bounds.max, app->mesh_bounds.min);
+    float maxDim = fmaxf(fmaxf(size.x, size.y), size.z);
+
+    // Set up side-view camera (orthographic, looking from +X direction)
+    Camera3D sideCamera = {0};
+    sideCamera.position = (Vector3) {center.x + maxDim * 2.0f, center.y, center.z};
+    sideCamera.target = center;
+    sideCamera.up = (Vector3) {0, 1, 0};
+    sideCamera.fovy = maxDim * 1.2f;
+    sideCamera.projection = CAMERA_ORTHOGRAPHIC;
+
+    int dragging_bound = 0; // 0=none, 1=min, 2=max
+    bool done = false;
+
+    // Slider bar dimensions (on right side of 3D view)
+    int viewX = app->sidebar_width;
+    int viewW = app->screen_width - app->sidebar_width;
+    int viewH = app->screen_height - 30;
+
+    int sliderBarX = app->screen_width - 80;
+    int sliderBarY = 80;
+    int sliderBarW = 40;
+    int sliderBarH = viewH - 160;
+    int handleH = 30;
+
+    float meshMinY = app->mesh_bounds.min.y;
+    float meshMaxY = app->mesh_bounds.max.y;
+    float meshRange = meshMaxY - meshMinY;
+
+    SetStatus(app, "Drag the sliders on the right to adjust height bounds.");
+
+    // Done button rectangle (defined outside loop for click detection)
+    int panelX = viewX + 20;
+    int panelY = 20;
+    int panelW = 260;
+    int panelH = 120;
+    Rectangle doneBtn = {panelX + panelW / 2 - 40, panelY + panelH - 35, 80, 25};
+
+    while (!done && !WindowShouldClose()) {
+        // Get input state (EndDrawing from previous frame already polled)
+        Vector2 mouse = GetMousePosition();
+
+        // Convert world Y to slider Y position (inverted: higher Y = lower on screen)
+        float minSliderY, maxSliderY;
+        if (meshRange > 0.001f) {
+            minSliderY = sliderBarY + sliderBarH - ((app->auto_layout.min_height - meshMinY) / meshRange) * sliderBarH;
+            maxSliderY = sliderBarY + sliderBarH - ((app->auto_layout.max_height - meshMinY) / meshRange) * sliderBarH;
+        } else {
+            minSliderY = sliderBarY + sliderBarH;
+            maxSliderY = sliderBarY;
+        }
+
+        // Define handle rectangles (make them wider for easier grabbing)
+        float halfH = (float) handleH / 2.0f;
+        Rectangle minHandle = {(float) sliderBarX - 10, minSliderY - halfH, (float) sliderBarW + 20, (float) handleH};
+        Rectangle maxHandle = {(float) sliderBarX - 10, maxSliderY - halfH, (float) sliderBarW + 20, (float) handleH};
+
+        // Mouse button released - stop dragging
+        if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+            dragging_bound = 0;
+        }
+
+        // Mouse click to start dragging or click Done button
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            if (CheckCollisionPointRec(mouse, doneBtn)) {
+                done = true;
+            } else if (CheckCollisionPointRec(mouse, maxHandle)) {
+                dragging_bound = 2;
+            } else if (CheckCollisionPointRec(mouse, minHandle)) {
+                dragging_bound = 1;
+            }
+        }
+
+        // Drag handling - update heights while dragging
+        if (IsMouseButtonDown(MOUSE_BUTTON_LEFT) && dragging_bound > 0) {
+            // Convert mouse Y to world Y
+            float t = 1.0f - (mouse.y - (float) sliderBarY) / (float) sliderBarH;
+            t = Clampf(t, 0.0f, 1.0f);
+            float worldY = meshMinY + t * meshRange;
+
+            if (dragging_bound == 1) {
+                app->auto_layout.min_height = Clampf(worldY, meshMinY, app->auto_layout.max_height - 0.01f);
+            } else if (dragging_bound == 2) {
+                app->auto_layout.max_height = Clampf(worldY, app->auto_layout.min_height + 0.01f, meshMaxY);
+            }
+        }
+
+        // ESC exits
+        if (IsKeyPressed(KEY_ESCAPE)) {
+            done = true;
+        }
+
+        // Draw frame
+        BeginDrawing();
+        ClearBackground(COLOR_BACKGROUND);
+
+        BeginScissorMode(viewX, 0, viewW - 100, viewH);
+        BeginMode3D(sideCamera);
+
+        DrawGrid(20, 0.5f);
+
+        // Draw mesh (no wires for performance)
+        DrawModel(app->vehicle_model, (Vector3) {0, 0, 0}, 1.0f, COLOR_MESH);
+
+        // Draw height bounds planes
+        DrawHeightBoundsPlanes(app, dragging_bound);
+
+        EndMode3D();
+        EndScissorMode();
+
+        // Draw slider bar background
+        DrawRectangle(sliderBarX - 10, sliderBarY - 20, sliderBarW + 20, sliderBarH + 40, (Color) {50, 50, 50, 220});
+        DrawRectangleLines(sliderBarX - 10, sliderBarY - 20, sliderBarW + 20, sliderBarH + 40, GRAY);
+
+        // Draw slider track
+        DrawRectangle(sliderBarX + sliderBarW / 2 - 3, sliderBarY, 6, sliderBarH, (Color) {80, 80, 80, 255});
+
+        // Draw mesh range indicator
+        DrawRectangle(sliderBarX + sliderBarW / 2 - 8, sliderBarY, 16, sliderBarH, (Color) {100, 100, 100, 100});
+
+        // Draw the region between min and max
+        float regionTop = maxSliderY;
+        float regionBot = minSliderY;
+        DrawRectangle(sliderBarX + 5, regionTop, sliderBarW - 10, regionBot - regionTop, (Color) {100, 200, 100, 100});
+
+        // Draw min handle (blue, bottom) - use the already calculated minHandle/maxHandle
+        Color minHandleColor = (dragging_bound == 1) ? (Color) {100, 200, 255, 255} : (Color) {50, 150, 255, 255};
+        DrawRectangleRec(minHandle, minHandleColor);
+        DrawRectangleLinesEx(minHandle, 2, (Color) {0, 100, 200, 255});
+        DrawText("MIN", minHandle.x + 15, minHandle.y + 8, 14, WHITE);
+
+        // Draw max handle (orange, top)
+        Color maxHandleColor = (dragging_bound == 2) ? (Color) {255, 180, 100, 255} : (Color) {255, 120, 50, 255};
+        DrawRectangleRec(maxHandle, maxHandleColor);
+        DrawRectangleLinesEx(maxHandle, 2, (Color) {200, 80, 0, 255});
+        DrawText("MAX", maxHandle.x + 15, maxHandle.y + 8, 14, WHITE);
+
+        // Draw labels
+        char minText[32], maxText[32];
+        snprintf(minText, sizeof(minText), "%.2fm", app->auto_layout.min_height);
+        snprintf(maxText, sizeof(maxText), "%.2fm", app->auto_layout.max_height);
+        DrawText(minText, sliderBarX - 5, minSliderY + handleH / 2 + 5, 12, (Color) {100, 180, 255, 255});
+        DrawText(maxText, sliderBarX - 5, maxSliderY - handleH / 2 - 18, 12, (Color) {255, 150, 100, 255});
+
+        // Draw overlay panel (uses panelX, panelY, panelW, panelH defined outside loop)
+        DrawRectangle(panelX, panelY, panelW, panelH, (Color) {40, 40, 40, 240});
+        DrawRectangleLines(panelX, panelY, panelW, panelH, WHITE);
+
+        DrawText("HEIGHT BOUNDS", panelX + 60, panelY + 15, 18, WHITE);
+        DrawText("Drag sliders on right", panelX + 20, panelY + 45, 14, LIGHTGRAY);
+        DrawText("Press ESC or Done to exit", panelX + 20, panelY + 65, 14, LIGHTGRAY);
+
+        // Done button (uses doneBtn defined outside loop)
+        DrawRectangleRec(doneBtn, GREEN);
+        DrawRectangleLinesEx(doneBtn, 1, DARKGREEN);
+        DrawText("Done", doneBtn.x + 22, doneBtn.y + 5, 16, BLACK);
+
+        // Status bar
+        DrawRectangle(0, app->screen_height - 25, app->screen_width, 25, (Color) {220, 220, 220, 255});
+        DrawText(app->status_msg, 10, app->screen_height - 22, 16, DARKGRAY);
+
+        EndDrawing();
+    }
+
+    SetStatus(app, "Height bounds set: %.2f - %.2f m", app->auto_layout.min_height, app->auto_layout.max_height);
+}
+
+void RunGroupCellSelect(AppState *app) {
+    if (app->cell_count == 0) {
+        SetStatus(app, "No cells to select");
+        return;
+    }
+
+    // Start a new string if needed
+    if (app->active_string_id < 0) {
+        StartNewString(app);
+    }
+
+    bool done = false;
+    bool dragging = false;
+    Vector2 dragStart = {0, 0};
+    Vector2 dragEnd = {0, 0};
+
+    int viewX = app->sidebar_width;
+    int viewW = app->screen_width - app->sidebar_width;
+    int viewH = app->screen_height - 30;
+
+    SetStatus(app, "Drag to select cells. ESC/Right-click to cancel, Release to confirm.");
+
+    while (!done && !WindowShouldClose()) {
+        // Get input state (EndDrawing from previous frame already polled)
+        Vector2 mouse = GetMousePosition();
+
+        // Start drag
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && mouse.x > viewX) {
+            dragging = true;
+            dragStart = mouse;
+            dragEnd = mouse;
+        }
+
+        // Update drag end
+        if (dragging) {
+            dragEnd = mouse;
+        }
+
+        // Release - add cells and exit
+        if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT) && dragging) {
+            float dist = Vector2Distance(dragStart, dragEnd);
+            if (dist > 5.0f) {
+                int added = AddCellsInRectToString(app, dragStart, dragEnd);
+                SetStatus(app, "Added %d cells to string #%d", added, app->active_string_id);
+            }
+            done = true;
+        }
+
+        // Cancel
+        if (IsKeyPressed(KEY_ESCAPE) || IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+            done = true;
+            SetStatus(app, "Group select cancelled");
+        }
+
+        // Draw frame
+        BeginDrawing();
+        ClearBackground(COLOR_BACKGROUND);
+
+        // Draw 3D view
+        BeginScissorMode(viewX, 0, viewW, viewH);
+        BeginMode3D(app->cam.camera);
+
+        DrawGrid(20, 0.5f);
+
+        if (app->mesh_loaded) {
+            DrawModel(app->vehicle_model, (Vector3){0, 0, 0}, 1.0f, COLOR_MESH);
+        }
+
+        // Draw cells
+        for (int i = 0; i < app->cell_count; i++) {
+            DrawCell(app, &app->cells[i]);
+        }
+
+        // Draw wiring
+        DrawWiring(app);
+
+        EndMode3D();
+        EndScissorMode();
+
+        // Draw selection rectangle
+        if (dragging) {
+            float minX = fminf(dragStart.x, dragEnd.x);
+            float maxX = fmaxf(dragStart.x, dragEnd.x);
+            float minY = fminf(dragStart.y, dragEnd.y);
+            float maxY = fmaxf(dragStart.y, dragEnd.y);
+
+            DrawRectangle((int)minX, (int)minY, (int)(maxX - minX), (int)(maxY - minY),
+                          (Color){100, 150, 255, 50});
+            DrawRectangleLines((int)minX, (int)minY, (int)(maxX - minX), (int)(maxY - minY),
+                               (Color){50, 100, 255, 200});
+
+            // Count cells in selection
+            int count = 0;
+            for (int i = 0; i < app->cell_count; i++) {
+                SolarCell *cell = &app->cells[i];
+                if (cell->string_id >= 0) continue;
+
+                Vector3 worldPos = CellGetWorldPosition(app, cell);
+                Vector2 screenPos = GetWorldToScreen(worldPos, app->cam.camera);
+
+                if (screenPos.x >= minX && screenPos.x <= maxX &&
+                    screenPos.y >= minY && screenPos.y <= maxY) {
+                    count++;
+                }
+            }
+
+            if (count > 0) {
+                char countText[32];
+                snprintf(countText, sizeof(countText), "%d cells", count);
+                DrawText(countText, (int)dragEnd.x + 10, (int)dragEnd.y + 10, 16, (Color){50, 100, 255, 200});
+            }
+        }
+
+        // Draw overlay instructions
+        int panelW = 280;
+        int panelH = 80;
+        int panelX = viewX + (viewW - panelW) / 2;
+        int panelY = 20;
+
+        DrawRectangle(panelX, panelY, panelW, panelH, (Color){40, 40, 40, 220});
+        DrawRectangleLines(panelX, panelY, panelW, panelH, WHITE);
+        DrawText("GROUP SELECT", panelX + 80, panelY + 12, 18, WHITE);
+        DrawText("Drag to select cells", panelX + 70, panelY + 38, 14, LIGHTGRAY);
+        DrawText("ESC or Right-click to cancel", panelX + 50, panelY + 56, 14, LIGHTGRAY);
+
+        // Status bar
+        DrawRectangle(0, app->screen_height - 25, app->screen_width, 25, (Color){220, 220, 220, 255});
+        DrawText(app->status_msg, 10, app->screen_height - 22, 16, DARKGRAY);
+
+        EndDrawing();
+    }
+}
+
 void AppDraw(AppState *app) {
     // 3D View
     int viewX = app->sidebar_width;
@@ -2803,6 +3623,51 @@ void AppDraw(AppState *app) {
 
     // Draw sun indicator
     DrawSunIndicator(app);
+
+    // Draw ghost cell preview in cell placement mode
+    if (app->mode == MODE_CELL_PLACEMENT && app->mesh_loaded && !app->placing_module) {
+        Vector2 mouse = GetMousePosition();
+        if (mouse.x > app->sidebar_width) {
+            Ray ray = GetMouseRay(mouse, app->cam.camera);
+            RayCollision hit = GetRayCollisionMesh(ray, app->vehicle_mesh, app->vehicle_model.transform);
+            if (hit.hit && hit.normal.y > 0.1f) {  // Only on upward-facing surfaces
+                CellPreset *preset = (CellPreset *)&CELL_PRESETS[app->selected_preset];
+                Vector3 pos = Vector3Add(hit.point, Vector3Scale(hit.normal, CELL_SURFACE_OFFSET));
+
+                // Calculate tangent exactly like PlaceCell does
+                Vector3 ref = {0, 0, 1};
+                Vector3 right = Vector3CrossProduct(ref, hit.normal);
+                if (Vector3Length(right) < 0.001f) {
+                    ref = (Vector3){1, 0, 0};
+                    right = Vector3CrossProduct(ref, hit.normal);
+                }
+                right = Vector3Normalize(right);
+                Vector3 forward = Vector3CrossProduct(hit.normal, right);
+
+                // Scale to cell size
+                right = Vector3Scale(right, preset->width / 2);
+                forward = Vector3Scale(forward, preset->height / 2);
+
+                // Ghost cell corners
+                Vector3 p1 = Vector3Add(pos, Vector3Add(Vector3Scale(right, -1), Vector3Scale(forward, -1)));
+                Vector3 p2 = Vector3Add(pos, Vector3Add(right, Vector3Scale(forward, -1)));
+                Vector3 p3 = Vector3Add(pos, Vector3Add(right, forward));
+                Vector3 p4 = Vector3Add(pos, Vector3Add(Vector3Scale(right, -1), forward));
+
+                // Draw ghost cell (semi-transparent green)
+                Color ghostColor = {100, 255, 100, 100};
+                DrawTriangle3D(p1, p2, p3, ghostColor);
+                DrawTriangle3D(p1, p3, p4, ghostColor);
+
+                // Draw outline
+                Color outlineColor = {50, 200, 50, 200};
+                DrawLine3D(p1, p2, outlineColor);
+                DrawLine3D(p2, p3, outlineColor);
+                DrawLine3D(p3, p4, outlineColor);
+                DrawLine3D(p4, p1, outlineColor);
+            }
+        }
+    }
 
     EndMode3D();
     EndScissorMode();

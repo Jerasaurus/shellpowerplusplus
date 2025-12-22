@@ -3,27 +3,20 @@
  */
 
 #include <stdio.h>
-#include <string.h>
 #include <stdlib.h>
+#include <string.h>
 #include "app.h"
-#include "raygui.h"
 #include "lib/tinyfiledialogs.h"
+#include "raygui.h"
 
 //------------------------------------------------------------------------------
 // File Dialog (using tinyfiledialogs)
 //------------------------------------------------------------------------------
 bool OpenFileDialog(char *outPath, int maxLen, const char *filter) {
-    (void)filter; // unused, we use our own filter patterns
+    (void) filter; // unused, we use our own filter patterns
 
     char const *filterPatterns[] = {"*.obj", "*.stl", "*.OBJ", "*.STL"};
-    char *result = tinyfd_openFileDialog(
-        "Select Mesh File",
-        "",
-        4,
-        filterPatterns,
-        "Mesh files (*.obj, *.stl)",
-        0
-    );
+    char *result = tinyfd_openFileDialog("Select Mesh File", "", 4, filterPatterns, "Mesh files (*.obj, *.stl)", 0);
 
     if (result) {
         strncpy(outPath, result, maxLen - 1);
@@ -36,14 +29,48 @@ bool OpenFileDialog(char *outPath, int maxLen, const char *filter) {
 //------------------------------------------------------------------------------
 // GUI Drawing
 //------------------------------------------------------------------------------
+
+// Dropdown state (must persist between frames for raygui)
+static int g_preset_dropdown_y = 0;
+static int g_vismode_dropdown_y = -1;
+static bool g_preset_open = false;
+static bool g_vismode_open = false;
+
 void DrawGUI(AppState *app) {
+    g_vismode_dropdown_y = -1;
+
     DrawSidebar(app);
     DrawStatusBar(app);
+
+    // Draw dropdowns last (raygui draws expanded items inline, so they get covered otherwise)
+    int padding = 10;
+    int w = app->sidebar_width - 2 * padding;
+
+    // Preset dropdown
+    if (GuiDropdownBox((Rectangle){padding, g_preset_dropdown_y, w, 25},
+                       "Maxeon Gen 3;Maxeon Gen 5;Generic Silicon",
+                       &app->selected_preset, g_preset_open)) {
+        g_preset_open = !g_preset_open;
+    }
+
+    // Vis mode dropdown (only after simulation)
+    if (g_vismode_dropdown_y >= 0) {
+        int vismode = (int)app->vis_mode;
+        if (GuiDropdownBox((Rectangle){padding, g_vismode_dropdown_y, w, 22},
+                           "String Power;Cell Flux;Cell Current;Shading;Bypass Status",
+                           &vismode, g_vismode_open)) {
+            g_vismode_open = !g_vismode_open;
+        }
+        app->vis_mode = (CellVisMode)vismode;
+    }
 }
 
 void DrawSidebar(AppState *app) {
     int sw = app->sidebar_width;
     int sh = app->screen_height - 30;
+
+    // Reset text editing flag (will be set true by any active text box)
+    app->gui_text_editing = false;
 
     // Background
     DrawRectangle(0, 0, sw, sh, COLOR_PANEL);
@@ -104,15 +131,8 @@ void DrawSidebar(AppState *app) {
     GuiLabel((Rectangle) {padding, y, w, 20}, "Cell Preset:");
     y += 22;
 
-    // Preset dropdown
-    static bool presetDropdown = false;
-    static int presetActive = 0;
-
-    if (GuiDropdownBox((Rectangle) {padding, y, w, 25}, "Maxeon Gen 3;Maxeon Gen 5;Generic Silicon", &presetActive,
-                       presetDropdown)) {
-        presetDropdown = !presetDropdown;
-        app->selected_preset = presetActive;
-    }
+    // Preset dropdown - reserve space, drawn in DrawGUI
+    g_preset_dropdown_y = y;
     y += 30;
 
     // Show preset info
@@ -187,6 +207,7 @@ int DrawImportPanel(AppState *app, int x, int y, int w) {
             }
         }
     }
+    if (scaleEditMode) app->gui_text_editing = true;
     y += 28;
 
     GuiLabel((Rectangle) {x, y, w, 20}, "(0.001 = mm to meters)");
@@ -339,6 +360,7 @@ int DrawCellPanel(AppState *app, int x, int y, int w) {
     if (GuiTextBox((Rectangle) {x, y, w - 60, 22}, moduleNameText, MAX_MODULE_NAME, moduleNameEdit)) {
         moduleNameEdit = !moduleNameEdit;
     }
+    if (moduleNameEdit) app->gui_text_editing = true;
 
     if (GuiButton((Rectangle) {x + w - 55, y, 55, 22}, "Create")) {
         if (strlen(moduleNameText) > 0 && app->cell_count > 0) {
@@ -430,6 +452,7 @@ int DrawCellPanel(AppState *app, int x, int y, int w) {
             }
         }
     }
+    if (areaEditMode) app->gui_text_editing = true;
     GuiLabel((Rectangle) {x + 150, y, 30, 20}, "m2");
     y += 24;
 
@@ -473,21 +496,27 @@ int DrawCellPanel(AppState *app, int x, int y, int w) {
         y += 22;
 
         if (!app->auto_layout.auto_detect_height) {
-            // Manual height range controls
-            float z_min_bound = app->mesh_loaded ? app->mesh_bounds.min.z - 0.1f : 0.0f;
-            float z_max_bound = app->mesh_loaded ? app->mesh_bounds.max.z + 0.1f : 10.0f;
+            // Button to enter visual editing mode
+            if (GuiButton((Rectangle) {x, y, w, 25}, "Set Bounds Visually")) {
+                RunHeightBoundsEditor(app);
+            }
+            y += 28;
+
+            // Manual sliders
+            float y_min_bound = app->mesh_loaded ? app->mesh_bounds.min.y : 0.0f;
+            float y_max_bound = app->mesh_loaded ? app->mesh_bounds.max.y : 10.0f;
 
             GuiLabel((Rectangle) {x, y, 60, 20}, "Min height:");
-            GuiSlider((Rectangle) {x + 65, y, w - 110, 20}, NULL, NULL, &app->auto_layout.min_height, z_min_bound,
-                      z_max_bound);
+            GuiSlider((Rectangle) {x + 65, y, w - 110, 20}, NULL, NULL, &app->auto_layout.min_height, y_min_bound,
+                      y_max_bound);
             char minHText[16];
             snprintf(minHText, sizeof(minHText), "%.2f", app->auto_layout.min_height);
             GuiLabel((Rectangle) {x + w - 40, y, 40, 20}, minHText);
             y += 22;
 
             GuiLabel((Rectangle) {x, y, 60, 20}, "Max height:");
-            GuiSlider((Rectangle) {x + 65, y, w - 110, 20}, NULL, NULL, &app->auto_layout.max_height, z_min_bound,
-                      z_max_bound);
+            GuiSlider((Rectangle) {x + 65, y, w - 110, 20}, NULL, NULL, &app->auto_layout.max_height, y_min_bound,
+                      y_max_bound);
             char maxHText[16];
             snprintf(maxHText, sizeof(maxHText), "%.2f", app->auto_layout.max_height);
             GuiLabel((Rectangle) {x + w - 40, y, 40, 20}, maxHText);
@@ -526,6 +555,11 @@ int DrawWiringPanel(AppState *app, int x, int y, int w) {
 
     GuiLabel((Rectangle) {x, y, w, 40}, "Click cells to add to string\nRight-click to end string");
     y += 45;
+
+    if (GuiButton((Rectangle) {x, y, w, 25}, "Group Select Cells")) {
+        RunGroupCellSelect(app);
+    }
+    y += 30;
 
     char stringInfo[64];
     snprintf(stringInfo, sizeof(stringInfo), "Strings: %d", app->string_count);
@@ -592,6 +626,7 @@ int DrawSimulationPanel(AppState *app, int x, int y, int w) {
             }
         }
     }
+    if (latEditMode) app->gui_text_editing = true;
     y += 24;
 
     GuiLabel((Rectangle) {x, y, 60, 20}, "Longitude:");
@@ -616,6 +651,7 @@ int DrawSimulationPanel(AppState *app, int x, int y, int w) {
             }
         }
     }
+    if (lonEditMode) app->gui_text_editing = true;
     y += 27;
 
     // Date
@@ -648,6 +684,7 @@ int DrawSimulationPanel(AppState *app, int x, int y, int w) {
             }
         }
     }
+    if (irrEditMode) app->gui_text_editing = true;
     GuiLabel((Rectangle) {x + 140, y, 50, 20}, "W/m2");
     y += 30;
 
@@ -684,17 +721,42 @@ int DrawSimulationPanel(AppState *app, int x, int y, int w) {
 
     // Static simulation results
     if (app->sim_run && !app->time_sim_run) {
-        char results[128];
-        snprintf(results, sizeof(results),
-                 "Power: %.1f W | Shaded: %.1f%%\n"
-                 "Sun: Alt %.1f° Az %.1f°",
-                 app->sim_results.total_power, app->sim_results.shaded_percentage, app->sim_results.sun_altitude,
-                 app->sim_results.sun_azimuth);
-        GuiLabel((Rectangle) {x, y, w, 40}, results);
-        y += 45;
+        char results[256];
+        if (app->string_count > 0) {
+            int total_bypassed = 0;
+            for (int s = 0; s < app->string_count; s++) {
+                total_bypassed += app->strings[s].bypassed_count;
+            }
+            snprintf(results, sizeof(results),
+                     "Power: %.1f W | Shaded: %.1f%%\n"
+                     "Bypassed cells: %d\n"
+                     "Sun: Alt %.1f° Az %.1f°",
+                     app->sim_results.total_power, app->sim_results.shaded_percentage,
+                     total_bypassed,
+                     app->sim_results.sun_altitude, app->sim_results.sun_azimuth);
+            GuiLabel((Rectangle) {x, y, w, 55}, results);
+            y += 60;
+        } else {
+            snprintf(results, sizeof(results),
+                     "Power: %.1f W | Shaded: %.1f%%\n"
+                     "Sun: Alt %.1f° Az %.1f°",
+                     app->sim_results.total_power, app->sim_results.shaded_percentage,
+                     app->sim_results.sun_altitude, app->sim_results.sun_azimuth);
+            GuiLabel((Rectangle) {x, y, w, 40}, results);
+            y += 45;
+        }
     } else if (!app->sim_run) {
         GuiLabel((Rectangle) {x, y, w, 20}, "Drag slider or click Run");
         y += 25;
+    }
+
+    // Visualization mode dropdown - reserve space, drawn in DrawGUI
+    if (app->sim_run) {
+        GuiLabel((Rectangle) {x, y, w, 20}, "Cell Color Mode:");
+        y += 20;
+
+        g_vismode_dropdown_y = y;
+        y += 28;
     }
 
     // =========================================================================

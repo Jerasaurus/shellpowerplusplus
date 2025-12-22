@@ -27,6 +27,8 @@ set(SOURCES
     src/app.c
     src/gui.c
     src/lib/tinyfiledialogs.c
+    src/simulation/iv_trace.c
+    src/simulation/string_sim.c
 )
 
 # Executable
@@ -35,6 +37,7 @@ add_executable(${PROJECT_NAME} ${SOURCES})
 # Include directories
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/simulation
 )
 
 # Link raylib
