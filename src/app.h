@@ -242,6 +242,12 @@ typedef struct {
     char status_msg[256];
     bool gui_text_editing; // True when any text field is in edit mode
 
+    // Update check state
+    bool update_check_done;
+    bool update_available;
+    bool should_exit_for_update;
+    char latest_version[32];
+
     // Wiring drag selection
     bool is_drag_selecting;
     Vector2 drag_start;
@@ -345,6 +351,9 @@ bool OpenFileDialog(char *outPath, int maxLen, const char *filter);
 // Project save/load
 bool SaveProject(AppState *app, const char *path);
 bool LoadProject(AppState *app, const char *path);
+
+// Update checking
+void CheckForUpdatesOnStartup(AppState *app);
 
 // Utility
 Color LerpColor(Color a, Color b, float t);

@@ -48,8 +48,13 @@ int main(int argc, char *argv[]) {
     app.screen_height = screenHeight;
     AppInit(&app);
 
+    // Start async update check (non-blocking)
+    CheckForUpdatesOnStartup(&app);
+
     // Main loop
-    while (!WindowShouldClose()) {
+    while (!WindowShouldClose() && !app.should_exit_for_update) {
+        // Poll for async update check completion
+        CheckForUpdatesOnStartup(&app);
         // Handle window resize
         if (IsWindowResized()) {
             app.screen_width = GetScreenWidth();

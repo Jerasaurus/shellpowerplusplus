@@ -6,6 +6,7 @@
 #include "app.h"
 #include "auto_layout.h"
 #include "stl_loader.h"
+#include "updater.h"
 #include "simulation/iv_trace.h"
 #include "simulation/string_sim.h"
 #include <math.h>
@@ -148,6 +149,14 @@ Color GenerateStringColor(void) {
 //------------------------------------------------------------------------------
 void AppInit(AppState *app) {
     srand((unsigned int) time(NULL));
+
+    // Initialize updater
+    UpdaterInit();
+    app->update_check_done = false;
+    app->update_available = false;
+    app->should_exit_for_update = false;
+    app->latest_version[0] = '\0';
+
     app->time_sim_run = false;
     memset(&app->time_sim_results, 0, sizeof(TimeSimResults));
     // Initialize mode
@@ -205,6 +214,45 @@ void AppInit(AppState *app) {
 void AppClose(AppState *app) {
     if (app->mesh_loaded) {
         UnloadModel(app->vehicle_model);
+    }
+    UpdaterCleanup();
+}
+
+//------------------------------------------------------------------------------
+// Update Checking
+//------------------------------------------------------------------------------
+void CheckForUpdatesOnStartup(AppState *app) {
+    // Start async check on first call
+    if (!app->update_check_done && !IsUpdateCheckComplete()) {
+        StartAsyncUpdateCheck();
+        return;
+    }
+
+    // Check if async update check is complete
+    if (!app->update_check_done && IsUpdateCheckComplete()) {
+        app->update_check_done = true;
+
+        UpdateCheckResult result = GetUpdateCheckResult();
+
+        if (result.check_failed) {
+            // Silently fail - don't bother user if network is unavailable
+            TraceLog(LOG_WARNING, "Update check failed: %s", result.error_message);
+            return;
+        }
+
+        if (result.update_available) {
+            app->update_available = true;
+            strncpy(app->latest_version, result.latest_version, sizeof(app->latest_version) - 1);
+            app->latest_version[sizeof(app->latest_version) - 1] = '\0';
+
+            // Show dialog and download if user accepts
+            if (ShowUpdateDialog(&result)) {
+                if (DownloadAndInstallUpdate(&result)) {
+                    // Update installed, signal app to exit
+                    app->should_exit_for_update = true;
+                }
+            }
+        }
     }
 }
 

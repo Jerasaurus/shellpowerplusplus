@@ -94,3 +94,32 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: shellpower-windows-x64.exe
+
+  create-checksums:
+    needs: [build-linux, build-macos, build-macos-intel, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for assets to be available
+        run: sleep 30
+
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir release-assets
+          gh release download ${{ github.ref_name }} \
+            --repo ${{ github.repository }} \
+            --dir release-assets \
+            --pattern 'shellpower-*'
+
+      - name: Generate SHA256SUMS.txt
+        run: |
+          cd release-assets
+          sha256sum shellpower-* > SHA256SUMS.txt
+          echo "Generated checksums:"
+          cat SHA256SUMS.txt
+
+      - name: Upload checksums to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/SHA256SUMS.txt
