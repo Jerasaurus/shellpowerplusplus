@@ -14,11 +14,13 @@ A comprehensive guide for designing and simulating solar panel arrays on vehicle
 5. [Step 3: Placing Solar Cells](#5-step-3-placing-solar-cells)
 6. [Step 4: Auto-Layout System](#6-step-4-auto-layout-system)
 7. [Step 5: Wiring Cells into Strings](#7-step-5-wiring-cells-into-strings)
-8. [Step 6: Running Simulations](#8-step-6-running-simulations)
-9. [Working with Modules](#9-working-with-modules)
-10. [Camera Controls](#10-camera-controls)
-11. [Keyboard Shortcuts](#11-keyboard-shortcuts)
-12. [Troubleshooting](#12-troubleshooting)
+8. [Step 6: Bypass Diodes](#8-step-6-bypass-diodes)
+9. [Step 7: Running Simulations](#9-step-7-running-simulations)
+10. [Working with Modules](#10-working-with-modules)
+11. [Camera Controls](#11-camera-controls)
+12. [Keyboard Shortcuts](#12-keyboard-shortcuts)
+13. [Auto-Updates](#13-auto-updates)
+14. [Troubleshooting](#14-troubleshooting)
 
 ---
 
@@ -61,6 +63,7 @@ The application window is divided into two main areas:
 |                  |                                        |
 |    SIDEBAR       |           3D VIEWPORT                  |
 |    (Controls)    |           (Mesh View)                  |
+|    [Scrollable]  |                                        |
 |                  |                                        |
 |  [Mode Tabs]     |                                        |
 |  - Import        |                                        |
@@ -75,6 +78,8 @@ The application window is divided into two main areas:
 |                    STATUS BAR                             |
 +-----------------------------------------------------------+
 ```
+
+**Note:** The sidebar is scrollable. Use the mouse wheel when hovering over the sidebar to scroll if content extends beyond the visible area.
 
 ### Mode Tabs
 
@@ -265,7 +270,10 @@ Cells must be wired into series strings to simulate realistic electrical behavio
 2. Click **Group Select Cells** button
 3. Click and drag to draw a rectangle around the cells you want to select
 4. Release to add all unwired cells in the rectangle to the current string
-5. Repeat as needed, then end the string
+5. Cells are automatically wired in a **snake pattern** (left-to-right, then right-to-left on next row)
+6. Repeat as needed, then end the string
+
+The snake pattern ensures efficient series wiring by minimizing wire lengths between adjacent cells.
 
 ### 7.3 String Visualization
 
@@ -290,9 +298,53 @@ To remove all wiring:
 
 ---
 
-## 8. Step 6: Running Simulations
+## 8. Step 6: Bypass Diodes
 
-### 8.1 Setting Location and Date
+Bypass diodes protect strings from power loss when individual cells are shaded.
+
+### 8.1 Understanding Bypass Diodes
+
+In a series string, a shaded cell limits the current of the entire string. Bypass diodes allow current to flow around shaded cells, preventing them from dragging down the whole string.
+
+- A bypass diode spans a **segment** of cells (from cell A to cell B)
+- When any cell in the segment can't provide enough current, the **entire segment** is bypassed
+- You can have multiple bypass diodes on a single string, including nested segments
+
+### 8.2 Adding a Bypass Diode
+
+1. Click the **Wire** tab
+2. Scroll down to the **BYPASS DIODES** section
+3. Click **Place Bypass Diode** to enter placement mode (button shows "[Active]")
+4. Click on the **first cell** of the segment you want to bypass
+5. Click on the **last cell** of the segment
+6. The bypass diode is created and shown as a purple arc between the cells
+
+### 8.3 Nested Bypass Diodes
+
+You can create bypass diodes within other bypass diodes for finer-grained control:
+
+**Example:** Cells 1-10 in a string
+- Large bypass diode: cells 1-10 (safety net for entire section)
+- Small bypass diode: cells 4-6 (targeted protection)
+
+If cell 5 is shaded, only cells 4-6 are bypassed (the smallest segment covering the shaded cell). Cells 1-3 and 7-10 remain active.
+
+### 8.4 Clearing Bypass Diodes
+
+1. Click **Wire** tab
+2. Click **Clear All Bypass Diodes**
+3. All bypass diodes will be removed
+
+### 8.5 Bypass Diode Visualization
+
+- Bypass diodes appear as **purple arcs** connecting the start and end cells
+- After simulation, use **Bypass Status** visualization mode to see which cells are being bypassed (red = bypassed, green = active)
+
+---
+
+## 9. Step 7: Running Simulations
+
+### 9.1 Setting Location and Date
 
 1. Click the **Sim** tab
 2. Configure location:
@@ -303,7 +355,7 @@ To remove all wiring:
    - **Day:** Use spinner (1-31)
 4. Set **Irradiance** (typically 1000 W/m for standard testing)
 
-### 8.2 Instant Simulation (Single Time Point)
+### 9.2 Instant Simulation (Single Time Point)
 
 Use this for quick analysis at a specific time:
 
@@ -315,7 +367,7 @@ Use this for quick analysis at a specific time:
    - **Sun Altitude:** Angle of sun above horizon
    - **Sun Azimuth:** Compass direction of sun
 
-### 8.3 Daily Energy Simulation (Full Day)
+### 9.3 Daily Energy Simulation (Full Day)
 
 Use this for comprehensive analysis:
 
@@ -334,13 +386,13 @@ Use this for comprehensive analysis:
 | **Average Shading %** | Mean shading across all times |
 | **Capture Efficiency** | Actual vs. ideal tracking performance |
 
-### 8.4 Per-String Results
+### 9.4 Per-String Results
 
 After running a daily simulation, view the energy breakdown by string:
 - Each string's contribution to total energy is displayed
 - Helps identify underperforming strings
 
-### 8.5 Cell Visualization Modes
+### 9.5 Cell Visualization Modes
 
 After running a simulation, use the **Cell Color Mode** dropdown to visualize different aspects:
 
@@ -352,7 +404,7 @@ After running a simulation, use the **Cell Color Mode** dropdown to visualize di
 | **Shading** | Shows shaded (dark gray) vs sunlit (yellow) cells |
 | **Bypass Status** | Shows bypassed cells (red) vs active cells (green) |
 
-### 8.6 Understanding Simulation Physics
+### 9.6 Understanding Simulation Physics
 
 The simulation uses a **full IV trace model** for accurate string power calculation:
 
@@ -366,14 +418,18 @@ The simulation uses a **full IV trace model** for accurate string power calculat
    - The string's IV curve is computed by summing cell voltages at each current
    - Maximum Power Point (MPP) is found by sweeping the IV curve
    - Mismatched cells (shaded or poorly angled) limit the string current
+5. **Bypass Diodes:** When a cell can't provide the string current:
+   - The smallest bypass diode segment covering that cell activates
+   - All cells in that segment are bypassed together
+   - String current is set by the remaining active cells
 
 ---
 
-## 9. Working with Modules
+## 10. Working with Modules
 
 Modules let you save and reuse cell layout patterns.
 
-### 9.1 Creating a Module
+### 10.1 Creating a Module
 
 1. Place cells in the desired pattern
 2. Click the **Cells** tab
@@ -381,7 +437,7 @@ Modules let you save and reuse cell layout patterns.
 4. Click **Create Module**
 5. The module is saved to the `modules/` directory
 
-### 9.2 Loading a Module
+### 10.2 Loading a Module
 
 1. Click the **Cells** tab
 2. Find your module in the **Saved Modules** list
@@ -389,12 +445,12 @@ Modules let you save and reuse cell layout patterns.
 4. Click **Place Module** button
 5. Click on the mesh to place the module
 
-### 9.3 Deleting a Module
+### 10.3 Deleting a Module
 
 1. Click the **X** button next to the module name
 2. The module file will be deleted
 
-### 9.4 Module Storage
+### 10.4 Module Storage
 
 Modules are stored as JSON files in:
 ```
@@ -403,9 +459,9 @@ shellpower/modules/<module_name>.json
 
 ---
 
-## 10. Camera Controls
+## 11. Camera Controls
 
-### 10.1 Mouse Controls
+### 11.1 Mouse Controls
 
 | Action | Result |
 |--------|--------|
@@ -413,7 +469,7 @@ shellpower/modules/<module_name>.json
 | **Scroll Wheel** | Zoom in/out |
 | **Middle-click + Drag** | Pan view |
 
-### 10.2 Camera Modes
+### 11.2 Camera Modes
 
 | Mode | Description | Best For |
 |------|-------------|----------|
@@ -424,7 +480,7 @@ Toggle between modes:
 - Click the **Top-Down View** checkbox in the sidebar
 - Or press **T** on the keyboard
 
-### 10.3 Reset Camera
+### 11.3 Reset Camera
 
 To reset the camera to fit the entire mesh:
 - Click **Reset Camera** button
@@ -432,7 +488,7 @@ To reset the camera to fit the entire mesh:
 
 ---
 
-## 11. Keyboard Shortcuts
+## 12. Keyboard Shortcuts
 
 | Key | Action |
 |-----|--------|
@@ -440,11 +496,32 @@ To reset the camera to fit the entire mesh:
 | **E** | End current wiring string |
 | **T** | Toggle perspective/orthographic camera |
 | **R** | Reset camera to fit mesh |
+| **ESC** | Cancel bypass diode placement (in Wire mode) |
 | **Right-click** | End current wiring string (in Wire mode) |
 
 ---
 
-## 12. Troubleshooting
+## 13. Auto-Updates
+
+Shellpower++ automatically checks for updates on startup.
+
+### 13.1 Update Notifications
+
+When a new version is available:
+1. A dialog will appear showing the new version number
+2. Click **Yes** to open the GitHub releases page
+3. Download the appropriate version for your platform
+4. Replace the old executable with the new one
+
+### 13.2 Offline Mode
+
+If you don't have an internet connection:
+- The update check runs in the background and won't block the application
+- You can continue using the current version without interruption
+
+---
+
+## 14. Troubleshooting
 
 ### Mesh Not Visible
 
@@ -525,6 +602,7 @@ To reset the camera to fit the entire mesh:
 | Maximum Cells | 1000 |
 | Maximum Strings | 50 |
 | Cells per String | 100 |
+| Maximum Bypass Diodes | 100 |
 | Maximum Modules | 50 |
 | Cells per Module | 100 |
 
@@ -555,10 +633,10 @@ To reset the camera to fit the entire mesh:
 ## Workflow Summary
 
 ```
-1. IMPORT      2. CONFIGURE     3. PLACE         4. WIRE        5. SIMULATE
-   Mesh    -->    Scale     -->   Cells      -->  Strings   -->   Power
-                  Rotate         (Manual or       (Series)       (Instant or
-                                  Auto)                           Daily)
+1. IMPORT      2. CONFIGURE     3. PLACE         4. WIRE        5. BYPASS      6. SIMULATE
+   Mesh    -->    Scale     -->   Cells      -->  Strings   -->  Diodes    -->   Power
+                  Rotate         (Manual or       (Series)      (Optional)      (Instant or
+                                  Auto)                                          Daily)
 ```
 
 **Typical Workflow:**
@@ -567,10 +645,11 @@ To reset the camera to fit the entire mesh:
 3. Rotate if needed to orient correctly
 4. Select cell preset (Maxeon Gen 5 recommended)
 5. Use auto-layout or manually place cells
-6. Wire cells into strings
-7. Set location and date
-8. Run daily simulation
-9. Iterate on layout to optimize results
+6. Wire cells into strings (use Group Select for snake pattern)
+7. Add bypass diodes to protect against shading (optional)
+8. Set location and date
+9. Run daily simulation
+10. Iterate on layout to optimize results
 
 ---
 

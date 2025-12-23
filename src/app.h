@@ -16,6 +16,7 @@
 #define MAX_CELLS_PER_MODULE 100
 #define MAX_MODULE_NAME 64
 #define MODULES_DIRECTORY "modules"
+#define MAX_BYPASS_DIODES 100
 
 #define CELL_SURFACE_OFFSET 0.002f // Offset above mesh surface
 #define MIN_CELL_DISTANCE_FACTOR 1.05f // Slightly more than 1.0 to prevent any overlap
@@ -92,6 +93,16 @@ typedef struct {
     int bypassed_count;   // Number of cells being bypassed
     float power_ideal;    // Power if all cells were in full sun
 } CellString;
+
+// Bypass diode segment - bypasses cells between start and end (inclusive)
+typedef struct {
+    int id;
+    int string_id;          // Which string this diode is on
+    int start_cell_id;      // First cell in bypassed segment
+    int end_cell_id;        // Last cell in bypassed segment
+    bool is_conducting;     // True if diode is active (bypassing cells)
+    float voltage_drop;     // Forward voltage drop when conducting
+} BypassDiode;
 
 // Cell template within a module (relative position)
 typedef struct {
@@ -211,6 +222,13 @@ typedef struct {
     int next_string_id;
     int active_string_id; // Currently building string, -1 = none
 
+    // Bypass diodes
+    BypassDiode bypass_diodes[MAX_BYPASS_DIODES];
+    int bypass_diode_count;
+    int next_bypass_diode_id;
+    bool placing_bypass_diode;      // True when in bypass diode placement mode
+    int bypass_diode_start_cell;    // First cell selected for bypass, -1 = none
+
     // Modules
     CellModule modules[MAX_MODULES];
     int module_count;
@@ -307,6 +325,12 @@ Color GenerateStringColor(void);
 int AddCellsInRectToString(AppState *app, Vector2 screenMin, Vector2 screenMax);
 void DrawSelectionRect(AppState *app);
 void RunGroupCellSelect(AppState *app);
+
+// Bypass diodes
+int AddBypassDiode(AppState *app, int start_cell_id, int end_cell_id);
+void RemoveBypassDiode(AppState *app, int diode_id);
+void ClearAllBypassDiodes(AppState *app);
+void DrawBypassDiodes(AppState *app);
 
 // Modules
 void InitModules(AppState *app);

@@ -9,10 +9,18 @@
 //------------------------------------------------------------------------------
 #define STRING_SIM_MAX_CELLS 100
 #define STRING_SIM_SAMPLES 200
+#define STRING_SIM_MAX_SEGMENTS 20
 
 //------------------------------------------------------------------------------
 // String simulation structures
 //------------------------------------------------------------------------------
+
+// Segment bypass diode - bypasses a range of cells together
+typedef struct {
+    int start_idx;      // First cell index in segment (0-based within string)
+    int end_idx;        // Last cell index in segment (inclusive)
+    float v_drop;       // Forward voltage drop when conducting
+} SegmentBypass;
 
 // Result of simulating a single string
 typedef struct {
@@ -68,5 +76,13 @@ float StringSim_CalcCellCurrent(float isc_stc, float irradiance, float cos_angle
 // Uses simplified single-diode model
 float StringSim_CalcCellVoltage(float voc, float isc, float n_ideal,
                                  float operating_current, float irradiance_ratio);
+
+// Calculate string IV with segment bypass diodes
+// segments: Array of segment bypass diodes
+// n_segments: Number of segment bypass diodes
+// segment_bypassed: Output array indicating which segments are bypassed at MPP (can be NULL)
+void StringSim_CalcStringIVSegments(const IVTrace *cell_traces, int n_cells,
+                                     const SegmentBypass *segments, int n_segments,
+                                     StringSimResult *result, bool *segment_bypassed);
 
 #endif // STRING_SIM_H

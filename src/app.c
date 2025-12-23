@@ -178,6 +178,12 @@ void AppInit(AppState *app) {
     app->next_string_id = 0;
     app->active_string_id = -1;
 
+    // Bypass diodes
+    app->bypass_diode_count = 0;
+    app->next_bypass_diode_id = 0;
+    app->placing_bypass_diode = false;
+    app->bypass_diode_start_cell = -1;
+
     // Modules
     InitModules(app);
 
@@ -720,6 +726,124 @@ void ClearAllWiring(AppState *app) {
     SetStatus(app, "Cleared all wiring");
 }
 
+//------------------------------------------------------------------------------
+// Bypass Diodes
+//------------------------------------------------------------------------------
+
+int AddBypassDiode(AppState *app, int start_cell_id, int end_cell_id) {
+    if (app->bypass_diode_count >= MAX_BYPASS_DIODES) {
+        SetStatus(app, "Maximum bypass diodes reached");
+        return -1;
+    }
+
+    SolarCell *start_cell = NULL;
+    SolarCell *end_cell = NULL;
+    for (int i = 0; i < app->cell_count; i++) {
+        if (app->cells[i].id == start_cell_id) start_cell = &app->cells[i];
+        if (app->cells[i].id == end_cell_id) end_cell = &app->cells[i];
+    }
+
+    if (!start_cell || !end_cell) {
+        SetStatus(app, "Invalid cell IDs for bypass diode");
+        return -1;
+    }
+
+    if (start_cell->string_id < 0 || start_cell->string_id != end_cell->string_id) {
+        SetStatus(app, "Cells must be on the same string");
+        return -1;
+    }
+
+    if (start_cell->order_in_string > end_cell->order_in_string) {
+        int temp = start_cell_id;
+        start_cell_id = end_cell_id;
+        end_cell_id = temp;
+    }
+
+    for (int i = 0; i < app->bypass_diode_count; i++) {
+        if (app->bypass_diodes[i].start_cell_id == start_cell_id &&
+            app->bypass_diodes[i].end_cell_id == end_cell_id) {
+            SetStatus(app, "Bypass diode already exists");
+            return -1;
+        }
+    }
+
+    CellPreset *preset = (CellPreset *)&CELL_PRESETS[app->selected_preset];
+
+    BypassDiode *diode = &app->bypass_diodes[app->bypass_diode_count];
+    diode->id = app->next_bypass_diode_id++;
+    diode->string_id = start_cell->string_id;
+    diode->start_cell_id = start_cell_id;
+    diode->end_cell_id = end_cell_id;
+    diode->is_conducting = false;
+    diode->voltage_drop = preset->bypass_v_drop;
+    app->bypass_diode_count++;
+
+    SetStatus(app, "Added bypass diode #%d", diode->id);
+    return diode->id;
+}
+
+void RemoveBypassDiode(AppState *app, int diode_id) {
+    for (int i = 0; i < app->bypass_diode_count; i++) {
+        if (app->bypass_diodes[i].id == diode_id) {
+            // Shift remaining diodes down
+            for (int j = i; j < app->bypass_diode_count - 1; j++) {
+                app->bypass_diodes[j] = app->bypass_diodes[j + 1];
+            }
+            app->bypass_diode_count--;
+            SetStatus(app, "Removed bypass diode");
+            return;
+        }
+    }
+}
+
+void ClearAllBypassDiodes(AppState *app) {
+    app->bypass_diode_count = 0;
+    app->placing_bypass_diode = false;
+    app->bypass_diode_start_cell = -1;
+    SetStatus(app, "Cleared all bypass diodes");
+}
+
+void DrawBypassDiodes(AppState *app) {
+    for (int d = 0; d < app->bypass_diode_count; d++) {
+        BypassDiode *diode = &app->bypass_diodes[d];
+
+        // Find start and end cells
+        Vector3 startPos = {0}, endPos = {0};
+        Vector3 startNormal = {0, 1, 0}, endNormal = {0, 1, 0};
+
+        for (int c = 0; c < app->cell_count; c++) {
+            if (app->cells[c].id == diode->start_cell_id) {
+                startPos = CellGetWorldPosition(app, &app->cells[c]);
+                startNormal = CellGetWorldNormal(app, &app->cells[c]);
+            }
+            if (app->cells[c].id == diode->end_cell_id) {
+                endPos = CellGetWorldPosition(app, &app->cells[c]);
+                endNormal = CellGetWorldNormal(app, &app->cells[c]);
+            }
+        }
+
+        // Offset positions above the cells
+        float offset = CELL_SURFACE_OFFSET + 0.01f;
+        startPos = Vector3Add(startPos, Vector3Scale(startNormal, offset));
+        endPos = Vector3Add(endPos, Vector3Scale(endNormal, offset));
+
+        // Draw arc/curve for bypass diode (simple version: draw higher arc)
+        Vector3 midPos = Vector3Scale(Vector3Add(startPos, endPos), 0.5f);
+        Vector3 avgNormal = Vector3Normalize(Vector3Add(startNormal, endNormal));
+        midPos = Vector3Add(midPos, Vector3Scale(avgNormal, 0.02f)); // Raise midpoint
+
+        // Color: green if conducting, orange if not
+        Color diodeColor = diode->is_conducting ? GREEN : ORANGE;
+
+        // Draw two line segments forming an arc
+        DrawLine3D(startPos, midPos, diodeColor);
+        DrawLine3D(midPos, endPos, diodeColor);
+
+        // Draw small circle at midpoint to indicate diode
+        DrawSphere(midPos, 0.003f, diodeColor);
+    }
+}
+
 // Helper struct for sorting cells in snake pattern
 typedef struct {
     int cell_index;
@@ -727,16 +851,19 @@ typedef struct {
     float z;
 } CellSortEntry;
 
+// Global threshold for row grouping (set before sorting)
+static float g_row_threshold = 0.1f;
+
 // Comparison function for sorting by Z (row), then X
 static int CompareCellsByRow(const void *a, const void *b) {
     const CellSortEntry *ca = (const CellSortEntry *)a;
     const CellSortEntry *cb = (const CellSortEntry *)b;
 
-    // Compare Z first (rows) - smaller Z = earlier row
-    if (ca->z < cb->z - 0.01f) return -1;
-    if (ca->z > cb->z + 0.01f) return 1;
+    // Compare Z first (rows) - use threshold for grouping
+    if (ca->z < cb->z - g_row_threshold) return -1;
+    if (ca->z > cb->z + g_row_threshold) return 1;
 
-    // Same row - compare X
+    // Same row - compare X (left to right)
     if (ca->x < cb->x) return -1;
     if (ca->x > cb->x) return 1;
     return 0;
@@ -785,44 +912,50 @@ int AddCellsInRectToString(AppState *app, Vector2 screenMin, Vector2 screenMax) 
         return 0;
     }
 
-    // Sort cells by Z (row), then X
-    qsort(selected, selectedCount, sizeof(CellSortEntry), CompareCellsByRow);
-
     // Determine row spacing from cell preset
     CellPreset *preset = (CellPreset *)&CELL_PRESETS[app->selected_preset];
-    float rowThreshold = preset->height * 1.5f; // Cells within 1.5x cell height are same row
+    float rowThreshold = preset->height * 0.8f; // Cells within 0.8x cell height are same row
 
-    // Apply snake pattern: reverse every other row
-    int rowStart = 0;
-    int rowIndex = 0;
-    float currentRowZ = selected[0].z;
+    // Set global threshold for sort comparison
+    g_row_threshold = rowThreshold;
 
-    for (int i = 0; i <= selectedCount; i++) {
-        // Check if we've moved to a new row or reached the end
-        bool newRow = (i == selectedCount) ||
-                      (fabsf(selected[i].z - currentRowZ) > rowThreshold);
+    // Sort cells by Z (row), then X within each row
+    qsort(selected, selectedCount, sizeof(CellSortEntry), CompareCellsByRow);
 
-        if (newRow && i > rowStart) {
-            // Reverse this row if it's an odd-numbered row (snake pattern)
-            if (rowIndex % 2 == 1) {
-                int left = rowStart;
-                int right = i - 1;
-                while (left < right) {
-                    CellSortEntry temp = selected[left];
-                    selected[left] = selected[right];
-                    selected[right] = temp;
-                    left++;
-                    right--;
-                }
-            }
+    // Now apply snake pattern by identifying row boundaries and reversing odd rows
+    // First, identify row boundaries (where Z changes significantly)
+    int *rowBoundaries = (int *)malloc((selectedCount + 1) * sizeof(int));
+    int numRows = 0;
+    rowBoundaries[0] = 0;
 
-            rowIndex++;
-            rowStart = i;
-            if (i < selectedCount) {
-                currentRowZ = selected[i].z;
+    float prevZ = selected[0].z;
+    for (int i = 1; i < selectedCount; i++) {
+        // Check if this cell is in a different row
+        if (fabsf(selected[i].z - prevZ) > rowThreshold) {
+            numRows++;
+            rowBoundaries[numRows] = i;
+            prevZ = selected[i].z;
+        }
+    }
+    numRows++;
+    rowBoundaries[numRows] = selectedCount;
+
+    // Reverse odd-indexed rows for snake pattern
+    for (int row = 0; row < numRows; row++) {
+        if (row % 2 == 1) {
+            int left = rowBoundaries[row];
+            int right = rowBoundaries[row + 1] - 1;
+            while (left < right) {
+                CellSortEntry temp = selected[left];
+                selected[left] = selected[right];
+                selected[right] = temp;
+                left++;
+                right--;
             }
         }
     }
+
+    free(rowBoundaries);
 
     // Now add cells to string in snake order
     int added = 0;
@@ -1366,7 +1499,6 @@ void RunStaticSimulation(AppState *app) {
         } else {
             cell->is_shaded = CheckCellShading(app, cell, app->sim_results.sun_direction);
 
-            // Calculate cell's photo-generated current
             Vector3 worldNormal = CellGetWorldNormal(app, cell);
             float cosAngle = Vector3DotProduct(worldNormal, app->sim_results.sun_direction);
             cosAngle = fmaxf(0.0f, cosAngle);
@@ -1376,10 +1508,9 @@ void RunStaticSimulation(AppState *app) {
                 cell->voltage_output = 0;
                 cell->power_output = 0;
             } else {
-                // Calculate irradiance ratio (actual vs STC)
                 float irradiance_ratio = (app->sim_settings.irradiance / 1000.0f) * cosAngle;
                 cell->current_output = preset->isc * irradiance_ratio;
-                cell->voltage_output = preset->vmp; // Will be refined for strings
+                cell->voltage_output = preset->vmp;
                 cell->power_output = cell->current_output * cell->voltage_output;
             }
         }
@@ -1388,7 +1519,7 @@ void RunStaticSimulation(AppState *app) {
             app->sim_results.shaded_count++;
     }
 
-    // Second pass: Calculate string power with series constraints
+    // String power with series constraints
     float total_string_power = 0;
     float total_unwired_power = 0;
 
@@ -1396,69 +1527,137 @@ void RunStaticSimulation(AppState *app) {
         CellString *str = &app->strings[s];
         if (str->cell_count == 0) continue;
 
-        // Create IV traces for each cell in the string
         IVTrace cell_traces[MAX_CELLS_PER_STRING];
-        bool has_bypass[MAX_CELLS_PER_STRING];
-        int cell_indices[MAX_CELLS_PER_STRING]; // Map back to app->cells indices
+        int cell_indices[MAX_CELLS_PER_STRING];
+        int order_to_idx[MAX_CELLS_PER_STRING];
         int string_cell_count = 0;
 
-        // Build cell traces for this string
-        for (int c = 0; c < app->cell_count && string_cell_count < str->cell_count; c++) {
-            if (app->cells[c].string_id == str->id) {
-                SolarCell *cell = &app->cells[c];
+        // Build IV traces ordered by wiring order
+        for (int order = 0; order < str->cell_count; order++) {
+            for (int c = 0; c < app->cell_count; c++) {
+                if (app->cells[c].string_id == str->id && app->cells[c].order_in_string == order) {
+                    SolarCell *cell = &app->cells[c];
 
-                // Calculate irradiance ratio for this cell
-                float irradiance_ratio = 0;
-                if (!cell->is_shaded) {
-                    Vector3 worldNormal = CellGetWorldNormal(app, cell);
-                    float cosAngle = Vector3DotProduct(worldNormal, app->sim_results.sun_direction);
-                    cosAngle = fmaxf(0.0f, cosAngle);
-                    irradiance_ratio = (app->sim_settings.irradiance / 1000.0f) * cosAngle;
+                    float irradiance_ratio = 0;
+                    if (!cell->is_shaded) {
+                        Vector3 worldNormal = CellGetWorldNormal(app, cell);
+                        float cosAngle = Vector3DotProduct(worldNormal, app->sim_results.sun_direction);
+                        cosAngle = fmaxf(0.0f, cosAngle);
+                        irradiance_ratio = (app->sim_settings.irradiance / 1000.0f) * cosAngle;
+                    }
+
+                    IVTrace_CreateCellTrace(&cell_traces[string_cell_count],
+                                            preset->voc, preset->isc, preset->n_ideal,
+                                            preset->series_r, irradiance_ratio);
+
+                    order_to_idx[order] = string_cell_count;
+                    cell_indices[string_cell_count] = c;
+                    string_cell_count++;
+                    break;
                 }
-
-                // Create full IV trace for this cell
-                IVTrace_CreateCellTrace(&cell_traces[string_cell_count],
-                                        preset->voc, preset->isc, preset->n_ideal,
-                                        preset->series_r, irradiance_ratio);
-
-                has_bypass[string_cell_count] = cell->has_bypass_diode;
-                cell_indices[string_cell_count] = c;
-                string_cell_count++;
             }
         }
 
-        // Calculate string IV curve and find MPP using full model
-        StringSimResult sim_result;
-        StringSim_CalcStringIV(cell_traces, string_cell_count,
-                               preset->bypass_v_drop, has_bypass, &sim_result);
+        // Build segment bypass array
+        SegmentBypass segments[STRING_SIM_MAX_SEGMENTS];
+        int n_segments = 0;
 
-        // Update string results from simulation
+        for (int d = 0; d < app->bypass_diode_count && n_segments < STRING_SIM_MAX_SEGMENTS; d++) {
+            BypassDiode *diode = &app->bypass_diodes[d];
+            if (diode->string_id != str->id) continue;
+
+            int start_order = -1, end_order = -1;
+            for (int c = 0; c < app->cell_count; c++) {
+                if (app->cells[c].id == diode->start_cell_id)
+                    start_order = app->cells[c].order_in_string;
+                if (app->cells[c].id == diode->end_cell_id)
+                    end_order = app->cells[c].order_in_string;
+            }
+
+            if (start_order >= 0 && end_order >= 0) {
+                int min_order = start_order < end_order ? start_order : end_order;
+                int max_order = start_order > end_order ? start_order : end_order;
+
+                if (min_order < str->cell_count && max_order < str->cell_count) {
+                    segments[n_segments].start_idx = order_to_idx[min_order];
+                    segments[n_segments].end_idx = order_to_idx[max_order];
+                    segments[n_segments].v_drop = preset->bypass_v_drop;
+                    n_segments++;
+                }
+            }
+        }
+
+        StringSimResult sim_result;
+        bool segment_bypassed[STRING_SIM_MAX_SEGMENTS] = {false};
+
+        if (n_segments > 0) {
+            StringSim_CalcStringIVSegments(cell_traces, string_cell_count,
+                                           segments, n_segments,
+                                           &sim_result, segment_bypassed);
+        } else {
+            bool has_bypass[MAX_CELLS_PER_STRING];
+            for (int i = 0; i < string_cell_count; i++) {
+                has_bypass[i] = app->cells[cell_indices[i]].has_bypass_diode;
+            }
+            StringSim_CalcStringIV(cell_traces, string_cell_count,
+                                   preset->bypass_v_drop, has_bypass, &sim_result);
+        }
+
         str->total_power = sim_result.power_out;
         str->string_current = sim_result.current;
         str->string_voltage = sim_result.voltage;
         str->bypassed_count = sim_result.cells_bypassed;
 
-        // Update individual cell states based on string operating point
+        // Determine cell bypass state (smallest segment wins for nested bypasses)
+        int seg_sizes[STRING_SIM_MAX_SEGMENTS];
+        for (int seg = 0; seg < n_segments; seg++) {
+            seg_sizes[seg] = segments[seg].end_idx - segments[seg].start_idx + 1;
+        }
+
         for (int i = 0; i < string_cell_count; i++) {
             int c = cell_indices[i];
             SolarCell *cell = &app->cells[c];
+            bool cell_bypassed = false;
 
-            // Determine if cell is bypassed at MPP current
-            if (sim_result.current >= cell_traces[i].Isc && has_bypass[i]) {
+            if (n_segments > 0) {
+                int smallest_bypassed_size = string_cell_count + 1;
+                int smallest_active_size = string_cell_count + 1;
+
+                for (int seg = 0; seg < n_segments; seg++) {
+                    if (i >= segments[seg].start_idx && i <= segments[seg].end_idx) {
+                        if (segment_bypassed[seg]) {
+                            if (seg_sizes[seg] < smallest_bypassed_size)
+                                smallest_bypassed_size = seg_sizes[seg];
+                        } else {
+                            if (seg_sizes[seg] < smallest_active_size)
+                                smallest_active_size = seg_sizes[seg];
+                        }
+                    }
+                }
+
+                if (smallest_bypassed_size < string_cell_count + 1 &&
+                    smallest_active_size >= smallest_bypassed_size) {
+                    cell_bypassed = true;
+                }
+            }
+
+            if (!cell_bypassed && n_segments == 0 && cell->has_bypass_diode) {
+                if (sim_result.current >= cell_traces[i].Isc)
+                    cell_bypassed = true;
+            }
+
+            if (cell_bypassed) {
                 cell->is_bypassed = true;
                 cell->voltage_output = -preset->bypass_v_drop;
                 cell->power_output = sim_result.current * cell->voltage_output;
             } else {
                 cell->is_bypassed = false;
-                // Interpolate voltage from cell's IV trace at string current
                 cell->voltage_output = IVTrace_InterpV(&cell_traces[i], sim_result.current);
                 cell->power_output = sim_result.current * cell->voltage_output;
             }
         }
 
-        // Calculate ideal power (all cells in full sun)
         str->power_ideal = string_cell_count * preset->vmp * preset->imp;
-
         total_string_power += sim_result.power_out;
     }
 
@@ -1834,7 +2033,14 @@ void AppUpdate(AppState *app) {
     }
 
     if (IsKeyPressed(KEY_ESCAPE) && app->mode == MODE_WIRING) {
-        CancelCurrentString(app);
+        if (app->placing_bypass_diode) {
+            // Cancel bypass diode placement
+            app->placing_bypass_diode = false;
+            app->bypass_diode_start_cell = -1;
+            SetStatus(app, "Bypass diode placement cancelled");
+        } else {
+            CancelCurrentString(app);
+        }
     }
 
     // Auto switch camera mode based on app mode
@@ -1875,11 +2081,34 @@ void AppUpdate(AppState *app) {
                     }
                 }
             } else if (app->mode == MODE_WIRING) {
-                // Single cell click to add to string
                 Ray ray = GetMouseRay(mouse, app->cam.camera);
                 int cell_id = FindCellNearRay(app, ray, NULL);
-                if (cell_id >= 0) {
-                    AddCellToString(app, cell_id);
+
+                if (app->placing_bypass_diode) {
+                    // Bypass diode placement mode
+                    if (cell_id >= 0) {
+                        if (app->bypass_diode_start_cell < 0) {
+                            // First click - set start cell
+                            app->bypass_diode_start_cell = cell_id;
+                            SetStatus(app, "Selected start cell #%d. Click end cell.", cell_id);
+                        } else {
+                            // Second click - create bypass diode
+                            if (cell_id != app->bypass_diode_start_cell) {
+                                int diode_id = AddBypassDiode(app, app->bypass_diode_start_cell, cell_id);
+                                if (diode_id >= 0) {
+                                    SetStatus(app, "Added bypass diode #%d", diode_id);
+                                } else {
+                                    SetStatus(app, "Failed to add bypass diode");
+                                }
+                            }
+                            app->bypass_diode_start_cell = -1; // Reset for next placement
+                        }
+                    }
+                } else {
+                    // Normal wiring - single cell click to add to string
+                    if (cell_id >= 0) {
+                        AddCellToString(app, cell_id);
+                    }
                 }
             }
         }
@@ -2047,9 +2276,9 @@ void DrawWiring(AppState *app) {
             }
         }
 
-        // Draw lines
+        // Draw lines (black for visibility)
         for (int i = 0; i < str->cell_count - 1; i++) {
-            DrawLine3D(positions[i], positions[i + 1], str->color);
+            DrawLine3D(positions[i], positions[i + 1], BLACK);
         }
     }
 }
@@ -2351,6 +2580,7 @@ void RunGroupCellSelect(AppState *app) {
 
         // Draw wiring
         DrawWiring(app);
+        DrawBypassDiodes(app);
 
         EndMode3D();
         EndScissorMode();
@@ -2455,6 +2685,7 @@ void AppDraw(AppState *app) {
 
     // Draw wiring
     DrawWiring(app);
+    DrawBypassDiodes(app);
 
     // Draw sun indicator
     DrawSunIndicator(app);

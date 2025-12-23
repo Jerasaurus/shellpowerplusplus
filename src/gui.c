@@ -36,6 +36,10 @@ static int g_vismode_dropdown_y = -1;
 static bool g_preset_open = false;
 static bool g_vismode_open = false;
 
+// Sidebar scroll state
+static float g_sidebar_scroll_y = 0;
+static float g_sidebar_content_height = 0;
+
 void DrawGUI(AppState *app) {
     g_vismode_dropdown_y = -1;
 
@@ -76,9 +80,28 @@ void DrawSidebar(AppState *app) {
     DrawRectangle(0, 0, sw, sh, COLOR_PANEL);
     DrawLine(sw, 0, sw, sh, DARKGRAY);
 
-    int y = 10;
     int padding = 10;
     int w = sw - 2 * padding;
+
+    // Handle scrolling when mouse is over sidebar
+    Vector2 mouse = GetMousePosition();
+    if (mouse.x < sw && mouse.x >= 0 && mouse.y >= 0 && mouse.y < sh) {
+        float wheel = GetMouseWheelMove();
+        if (wheel != 0) {
+            g_sidebar_scroll_y -= wheel * 30.0f;
+            // Clamp scroll
+            float maxScroll = g_sidebar_content_height - sh + 20;
+            if (maxScroll < 0) maxScroll = 0;
+            if (g_sidebar_scroll_y < 0) g_sidebar_scroll_y = 0;
+            if (g_sidebar_scroll_y > maxScroll) g_sidebar_scroll_y = maxScroll;
+        }
+    }
+
+    // Start scissor mode for clipping
+    BeginScissorMode(0, 0, sw, sh);
+
+    // Apply scroll offset
+    int y = 10 - (int)g_sidebar_scroll_y;
 
     // Title
     GuiSetStyle(LABEL, TEXT_ALIGNMENT, TEXT_ALIGN_CENTER);
@@ -163,6 +186,23 @@ void DrawSidebar(AppState *app) {
 
     // Help text
     GuiLabel((Rectangle) {padding, y, w, 60}, "Drag: Rotate\nScroll: Zoom\nMiddle: Pan");
+    y += 70;
+
+    // End scissor mode
+    EndScissorMode();
+
+    // Calculate content height for scroll bounds (add back the scroll offset)
+    g_sidebar_content_height = y + (int)g_sidebar_scroll_y;
+
+    // Draw scroll indicator if content is scrollable
+    float maxScroll = g_sidebar_content_height - sh + 20;
+    if (maxScroll > 0) {
+        float scrollRatio = g_sidebar_scroll_y / maxScroll;
+        float indicatorHeight = (float)sh * sh / g_sidebar_content_height;
+        if (indicatorHeight < 30) indicatorHeight = 30;
+        float indicatorY = scrollRatio * (sh - indicatorHeight);
+        DrawRectangle(sw - 6, (int)indicatorY, 4, (int)indicatorHeight, (Color){150, 150, 150, 200});
+    }
 }
 
 int DrawImportPanel(AppState *app, int x, int y, int w) {
@@ -593,6 +633,42 @@ int DrawWiringPanel(AppState *app, int x, int y, int w) {
 
     if (GuiButton((Rectangle) {x, y, w, 25}, "Clear All Wiring")) {
         ClearAllWiring(app);
+    }
+    y += 35;
+
+    // Bypass Diodes section
+    GuiLabel((Rectangle) {x, y, w, 20}, "BYPASS DIODES");
+    y += 22;
+
+    GuiLabel((Rectangle) {x, y, w, 30}, "Click cell to start,\nclick another to bypass segment");
+    y += 35;
+
+    char diodeInfo[64];
+    snprintf(diodeInfo, sizeof(diodeInfo), "Bypass Diodes: %d", app->bypass_diode_count);
+    GuiLabel((Rectangle) {x, y, w, 20}, diodeInfo);
+    y += 22;
+
+    // Toggle bypass diode placement mode
+    const char *bypassBtnText = app->placing_bypass_diode ? "[Active] Place Diode" : "Place Bypass Diode";
+    if (GuiButton((Rectangle) {x, y, w, 25}, bypassBtnText)) {
+        app->placing_bypass_diode = !app->placing_bypass_diode;
+        app->bypass_diode_start_cell = -1; // Reset selection
+    }
+    y += 28;
+
+    // Show selection status when placing
+    if (app->placing_bypass_diode) {
+        if (app->bypass_diode_start_cell >= 0) {
+            snprintf(diodeInfo, sizeof(diodeInfo), "Start cell: #%d (click end)", app->bypass_diode_start_cell);
+        } else {
+            snprintf(diodeInfo, sizeof(diodeInfo), "Click first cell...");
+        }
+        GuiLabel((Rectangle) {x, y, w, 20}, diodeInfo);
+        y += 22;
+    }
+
+    if (GuiButton((Rectangle) {x, y, w, 25}, "Clear All Bypass Diodes")) {
+        ClearAllBypassDiodes(app);
     }
     y += 30;
 
