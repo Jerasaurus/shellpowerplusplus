@@ -10,7 +10,7 @@
 //------------------------------------------------------------------------------
 #define MAX_CELLS 1000
 #define MAX_STRINGS 50
-#define MAX_CELLS_PER_STRING 100
+#define MAX_CELLS_PER_STRING 500
 #define MAX_PATH_LENGTH 512
 #define MAX_MODULES 50
 #define MAX_CELLS_PER_MODULE 100

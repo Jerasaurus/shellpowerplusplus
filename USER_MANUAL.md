@@ -601,7 +601,7 @@ If you don't have an internet connection:
 |-------|-------|
 | Maximum Cells | 1000 |
 | Maximum Strings | 50 |
-| Cells per String | 100 |
+| Cells per String | 500 |
 | Maximum Bypass Diodes | 100 |
 | Maximum Modules | 50 |
 | Cells per Module | 100 |

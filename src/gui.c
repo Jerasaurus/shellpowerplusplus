@@ -731,11 +731,13 @@ int DrawSimulationPanel(AppState *app, int x, int y, int w) {
     y += 27;
 
     // Date
-    GuiLabel((Rectangle) {x, y, 50, 20}, "Month:");
-    GuiSpinner((Rectangle) {x + 55, y, 50, 20}, NULL, &app->sim_settings.month, 1, 12, false);
-    GuiLabel((Rectangle) {x + 115, y, 30, 20}, "Day:");
-    GuiSpinner((Rectangle) {x + 150, y, 50, 20}, NULL, &app->sim_settings.day, 1, 31, false);
-    y += 25;
+    GuiLabel((Rectangle) {x, y, 60, 20}, "Month:");
+    GuiSpinner((Rectangle) {x + 65, y, w - 65, 20}, NULL, &app->sim_settings.month, 1, 12, false);
+    y += 24;
+
+    GuiLabel((Rectangle) {x, y, 60, 20}, "Day:");
+    GuiSpinner((Rectangle) {x + 65, y, w - 65, 20}, NULL, &app->sim_settings.day, 1, 31, false);
+    y += 27;
 
     // Irradiance
     GuiLabel((Rectangle) {x, y, 70, 20}, "Irradiance:");
