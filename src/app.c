@@ -208,6 +208,14 @@ void AppInit(AppState *app) {
     app->is_drag_selecting = false;
     app->drag_start = (Vector2){0, 0};
     app->drag_end = (Vector2){0, 0};
+
+    // Cell selection
+    memset(app->selected_cells, 0, sizeof(app->selected_cells));
+    app->selected_count = 0;
+    app->is_moving_selection = false;
+    app->move_start_pos = (Vector3){0, 0, 0};
+    app->move_offset = (Vector3){0, 0, 0};
+
     SetStatus(app, "Welcome! Load a mesh file to begin.");
 
     // Camera
@@ -311,6 +319,12 @@ bool LoadVehicleMesh(AppState *app, const char *path) {
 
     // Clear existing cells
     ClearAllCells(app);
+
+    // Require re-anchoring the grid on each newly loaded mesh.
+    app->snap.grid_origin = (Vector3){0, 0, 0};
+    app->snap.grid_normal = (Vector3){0, 1, 0};
+    app->snap.setting_grid_origin = false;
+    app->snap.grid_configured = false;
 
     SetStatus(app, "Loaded mesh: %s", GetFileName(path));
     return true;
@@ -578,6 +592,112 @@ int FindCellNearRay(AppState *app, Ray ray, float *out_distance) {
     if (out_distance)
         *out_distance = closest_dist;
     return closest_id;
+}
+
+//------------------------------------------------------------------------------
+// Cell Selection
+//------------------------------------------------------------------------------
+
+void ClearCellSelection(AppState *app) {
+    memset(app->selected_cells, 0, sizeof(app->selected_cells));
+    app->selected_count = 0;
+    app->is_moving_selection = false;
+}
+
+bool IsCellSelected(AppState *app, int cell_index) {
+    if (cell_index < 0 || cell_index >= app->cell_count) return false;
+    return app->selected_cells[cell_index];
+}
+
+void SelectCell(AppState *app, int cell_index, bool add_to_selection) {
+    if (cell_index < 0 || cell_index >= app->cell_count) return;
+
+    if (!add_to_selection) {
+        // Clear existing selection first
+        ClearCellSelection(app);
+    }
+
+    if (!app->selected_cells[cell_index]) {
+        app->selected_cells[cell_index] = true;
+        app->selected_count++;
+    }
+}
+
+void SelectCellsInRect(AppState *app, Vector2 screenMin, Vector2 screenMax, bool add_to_selection) {
+    if (!add_to_selection) {
+        ClearCellSelection(app);
+    }
+
+    // Normalize rectangle bounds
+    float minX = fminf(screenMin.x, screenMax.x);
+    float maxX = fmaxf(screenMin.x, screenMax.x);
+    float minY = fminf(screenMin.y, screenMax.y);
+    float maxY = fmaxf(screenMin.y, screenMax.y);
+
+    for (int i = 0; i < app->cell_count; i++) {
+        Vector3 worldPos = CellGetWorldPosition(app, &app->cells[i]);
+        Vector2 screenPos = GetWorldToScreen(worldPos, app->cam.camera);
+
+        if (screenPos.x >= minX && screenPos.x <= maxX &&
+            screenPos.y >= minY && screenPos.y <= maxY) {
+            if (!app->selected_cells[i]) {
+                app->selected_cells[i] = true;
+                app->selected_count++;
+            }
+        }
+    }
+}
+
+void SelectAllCells(AppState *app) {
+    ClearCellSelection(app);
+    for (int i = 0; i < app->cell_count; i++) {
+        app->selected_cells[i] = true;
+    }
+    app->selected_count = app->cell_count;
+}
+
+void DeleteSelectedCells(AppState *app) {
+    if (app->selected_count == 0) return;
+
+    // Delete from end to start to avoid index shifting issues
+    for (int i = app->cell_count - 1; i >= 0; i--) {
+        if (app->selected_cells[i]) {
+            RemoveCell(app, app->cells[i].id);
+        }
+    }
+
+    ClearCellSelection(app);
+    SetStatus(app, "Deleted selected cells");
+}
+
+void MoveSelectedCells(AppState *app, Vector3 offset) {
+    if (app->selected_count == 0) return;
+
+    // Get inverse transform to convert world offset to local offset
+    Matrix invTransform = MatrixInvert(app->vehicle_model.transform);
+    Matrix normalInvTransform = invTransform;
+    normalInvTransform.m12 = 0;
+    normalInvTransform.m13 = 0;
+    normalInvTransform.m14 = 0;
+
+    // Transform offset to local space (direction only, not position)
+    Vector3 localOffset = Vector3Transform(offset, normalInvTransform);
+
+    for (int i = 0; i < app->cell_count; i++) {
+        if (app->selected_cells[i]) {
+            app->cells[i].local_position = Vector3Add(app->cells[i].local_position, localOffset);
+        }
+    }
+}
+
+// Find cell index by ID
+static int FindCellIndexById(AppState *app, int cell_id) {
+    for (int i = 0; i < app->cell_count; i++) {
+        if (app->cells[i].id == cell_id) {
+            return i;
+        }
+    }
+    return -1;
 }
 
 //------------------------------------------------------------------------------
@@ -1251,9 +1371,19 @@ void DeleteModule(AppState *app, int module_index) {
 //------------------------------------------------------------------------------
 void InitSnap(AppState *app) {
     app->snap.grid_snap_enabled = false;
-    app->snap.grid_size = 0.125f; // Default to cell size (125mm)
+    // Default grid size based on cell preset with small gap (2mm)
+    CellPreset *preset = (CellPreset *)&CELL_PRESETS[app->selected_preset];
+    float cell_size = fmaxf(preset->width, preset->height);
+    app->snap.grid_size = cell_size + 0.002f; // Cell size + 2mm gap
     app->snap.align_to_surface = true;
     app->snap.show_grid = false;
+
+    // Grid positioning
+    app->snap.grid_origin = (Vector3){0, 0, 0};
+    app->snap.grid_normal = (Vector3){0, 1, 0};
+    app->snap.grid_rotation = 0.0f;
+    app->snap.setting_grid_origin = false;
+    app->snap.grid_configured = false;
 }
 
 Vector3 ApplyGridSnap(AppState *app, Vector3 position) {
@@ -1264,17 +1394,46 @@ Vector3 ApplyGridSnap(AppState *app, Vector3 position) {
     if (grid <= 0)
         return position;
 
-    // Snap X and Z to grid (Y follows surface)
-    Vector3 snapped = position;
-    snapped.x = roundf(position.x / grid) * grid;
-    snapped.z = roundf(position.z / grid) * grid;
+    // Build local coordinate system from grid_normal
+    Vector3 normal = Vector3Normalize(app->snap.grid_normal);
 
-    // If mesh is loaded, project snapped position back onto surface
+    // Create tangent vectors perpendicular to the normal
+    Vector3 tangent1, tangent2;
+    Vector3 ref = (Vector3){0, 0, 1};
+    if (fabsf(Vector3DotProduct(normal, ref)) > 0.9f) {
+        ref = (Vector3){1, 0, 0};
+    }
+    tangent1 = Vector3Normalize(Vector3CrossProduct(ref, normal));
+    tangent2 = Vector3Normalize(Vector3CrossProduct(normal, tangent1));
+
+    // Apply grid rotation to tangent vectors
+    float rotRad = app->snap.grid_rotation * DEG2RAD;
+    float cosR = cosf(rotRad);
+    float sinR = sinf(rotRad);
+    Vector3 rotT1 = Vector3Add(Vector3Scale(tangent1, cosR), Vector3Scale(tangent2, sinR));
+    Vector3 rotT2 = Vector3Add(Vector3Scale(tangent1, -sinR), Vector3Scale(tangent2, cosR));
+    tangent1 = rotT1;
+    tangent2 = rotT2;
+
+    // Project position into local UV space relative to grid_origin
+    Vector3 relPos = Vector3Subtract(position, app->snap.grid_origin);
+    float u = Vector3DotProduct(relPos, tangent1);
+    float v = Vector3DotProduct(relPos, tangent2);
+
+    // Snap U and V to cell centers (center of grid squares, not intersections)
+    u = floorf(u / grid) * grid + grid * 0.5f;
+    v = floorf(v / grid) * grid + grid * 0.5f;
+
+    // Convert back to world space
+    Vector3 snapped = app->snap.grid_origin;
+    snapped = Vector3Add(snapped, Vector3Scale(tangent1, u));
+    snapped = Vector3Add(snapped, Vector3Scale(tangent2, v));
+
+    // Raycast down to mesh surface to get final Y position
     if (app->mesh_loaded) {
-        // Cast ray downward from above the snapped position
         Ray ray;
-        ray.position = (Vector3) {snapped.x, app->mesh_bounds.max.y + 1.0f, snapped.z};
-        ray.direction = (Vector3) {0, -1, 0};
+        ray.position = (Vector3){snapped.x, app->mesh_bounds.max.y + 1.0f, snapped.z};
+        ray.direction = (Vector3){0, -1, 0};
 
         RayCollision hit = GetRayCollisionMesh(ray, app->vehicle_mesh, app->vehicle_model.transform);
         if (hit.hit) {
@@ -1286,8 +1445,6 @@ Vector3 ApplyGridSnap(AppState *app, Vector3 position) {
 }
 
 void DrawSnapGrid(AppState *app) {
-    if (!app->snap.show_grid)
-        return;
     if (!app->mesh_loaded)
         return;
 
@@ -1295,51 +1452,110 @@ void DrawSnapGrid(AppState *app) {
     if (grid <= 0)
         return;
 
-    // Draw grid lines on the XZ plane at mesh height
-    float y = app->mesh_bounds.max.y + 0.01f;
-    float extentX = (app->mesh_bounds.max.x - app->mesh_bounds.min.x) * 0.6f;
-    float extentZ = (app->mesh_bounds.max.z - app->mesh_bounds.min.z) * 0.6f;
+    // Determine origin and normal - use hover position when setting grid origin
+    Vector3 origin = app->snap.grid_origin;
+    Vector3 normal = app->snap.grid_normal;
+    bool isPreview = false;
 
-    // Center of mesh
-    float centerX = (app->mesh_bounds.min.x + app->mesh_bounds.max.x) / 2.0f;
-    float centerZ = (app->mesh_bounds.min.z + app->mesh_bounds.max.z) / 2.0f;
+    if (app->snap.setting_grid_origin) {
+        // Show preview grid at mouse hover position
+        Vector2 mouse = GetMousePosition();
+        if (mouse.x > app->sidebar_width) {
+            Ray ray = GetMouseRay(mouse, app->cam.camera);
+            RayCollision hit = GetRayCollisionMesh(ray, app->vehicle_mesh, app->vehicle_model.transform);
+            if (hit.hit && hit.normal.y > 0.1f) {
+                origin = hit.point;
+                normal = hit.normal;
+                isPreview = true;
+            } else {
+                return; // No valid hover, don't draw preview
+            }
+        } else {
+            return; // Mouse over sidebar
+        }
+    } else if (!app->snap.show_grid) {
+        return; // Grid display disabled and not setting origin
+    }
 
-    Color gridColor = (Color) {100, 100, 255, 80};
+    normal = Vector3Normalize(normal);
 
-    // Snap extents to grid
-    float startX = floorf((centerX - extentX) / grid) * grid;
-    float endX = ceilf((centerX + extentX) / grid) * grid;
-    float startZ = floorf((centerZ - extentZ) / grid) * grid;
-    float endZ = ceilf((centerZ + extentZ) / grid) * grid;
+    // Create tangent vectors perpendicular to the normal
+    Vector3 tangent1, tangent2;
+    Vector3 ref = (Vector3){0, 0, 1};
+    if (fabsf(Vector3DotProduct(normal, ref)) > 0.9f) {
+        ref = (Vector3){1, 0, 0};
+    }
+    tangent1 = Vector3Normalize(Vector3CrossProduct(ref, normal));
+    tangent2 = Vector3Normalize(Vector3CrossProduct(normal, tangent1));
 
-    // Limit number of lines for performance
+    // Apply grid_rotation to tangent vectors
+    float rotRad = app->snap.grid_rotation * DEG2RAD;
+    float cosR = cosf(rotRad);
+    float sinR = sinf(rotRad);
+    Vector3 rotT1 = Vector3Add(Vector3Scale(tangent1, cosR), Vector3Scale(tangent2, sinR));
+    Vector3 rotT2 = Vector3Add(Vector3Scale(tangent1, -sinR), Vector3Scale(tangent2, cosR));
+    tangent1 = rotT1;
+    tangent2 = rotT2;
+
+    // Grid extent: ±20 cells in each direction
+    int gridExtent = 20;
     int maxLines = 50;
-    int linesX = (int) ((endX - startX) / grid);
-    int linesZ = (int) ((endZ - startZ) / grid);
 
-    if (linesX > maxLines) {
-        float newGrid = (endX - startX) / maxLines;
-        grid = newGrid;
-        startX = floorf((centerX - extentX) / grid) * grid;
-        endX = ceilf((centerX + extentX) / grid) * grid;
-    }
-    if (linesZ > maxLines) {
-        float newGrid = (endZ - startZ) / maxLines;
-        if (newGrid > grid)
-            grid = newGrid;
-        startZ = floorf((centerZ - extentZ) / grid) * grid;
-        endZ = ceilf((centerZ + extentZ) / grid) * grid;
+    // Limit lines for performance
+    if (gridExtent * 2 > maxLines) {
+        gridExtent = maxLines / 2;
     }
 
-    // Draw X-parallel lines (varying Z)
-    for (float z = startZ; z <= endZ; z += grid) {
-        DrawLine3D((Vector3) {startX, y, z}, (Vector3) {endX, y, z}, gridColor);
+    // Use different colors for preview vs actual grid
+    Color gridColor, originColor;
+    float liftHeight = 0.005f;  // Height above surface
+    if (isPreview) {
+        gridColor = (Color){0, 0, 180, 220};      // Dark blue grid lines
+        originColor = (Color){255, 100, 0, 255};  // Orange for origin axes (stands out)
+    } else {
+        gridColor = (Color){80, 80, 255, 180};    // Blue grid lines
+        originColor = (Color){255, 50, 50, 255};  // Red for origin axes
     }
 
-    // Draw Z-parallel lines (varying X)
-    for (float x = startX; x <= endX; x += grid) {
-        DrawLine3D((Vector3) {x, y, startZ}, (Vector3) {x, y, endZ}, gridColor);
+    // Draw grid lines along tangent1 direction (varying tangent2)
+    for (int i = -gridExtent; i <= gridExtent; i++) {
+        Vector3 offset = Vector3Scale(tangent2, i * grid);
+        Vector3 start = Vector3Add(origin, Vector3Add(offset, Vector3Scale(tangent1, -gridExtent * grid)));
+        Vector3 end = Vector3Add(origin, Vector3Add(offset, Vector3Scale(tangent1, gridExtent * grid)));
+
+        // Lift above surface along normal direction
+        start = Vector3Add(start, Vector3Scale(normal, liftHeight));
+        end = Vector3Add(end, Vector3Scale(normal, liftHeight));
+
+        // Highlight origin axes in red
+        if (i == 0) {
+            DrawLine3D(start, end, originColor);
+        } else {
+            DrawLine3D(start, end, gridColor);
+        }
     }
+
+    // Draw grid lines along tangent2 direction (varying tangent1)
+    for (int i = -gridExtent; i <= gridExtent; i++) {
+        Vector3 offset = Vector3Scale(tangent1, i * grid);
+        Vector3 start = Vector3Add(origin, Vector3Add(offset, Vector3Scale(tangent2, -gridExtent * grid)));
+        Vector3 end = Vector3Add(origin, Vector3Add(offset, Vector3Scale(tangent2, gridExtent * grid)));
+
+        // Lift above surface along normal direction
+        start = Vector3Add(start, Vector3Scale(normal, liftHeight));
+        end = Vector3Add(end, Vector3Scale(normal, liftHeight));
+
+        // Highlight origin axes in red
+        if (i == 0) {
+            DrawLine3D(start, end, originColor);
+        } else {
+            DrawLine3D(start, end, gridColor);
+        }
+    }
+
+    // Draw small sphere marker at grid origin
+    Vector3 markerPos = Vector3Add(origin, Vector3Scale(normal, 0.015f));
+    DrawSphere(markerPos, 0.012f, originColor);
 }
 
 //------------------------------------------------------------------------------
@@ -2032,14 +2248,46 @@ void AppUpdate(AppState *app) {
         EndCurrentString(app);
     }
 
-    if (IsKeyPressed(KEY_ESCAPE) && app->mode == MODE_WIRING) {
-        if (app->placing_bypass_diode) {
-            // Cancel bypass diode placement
-            app->placing_bypass_diode = false;
-            app->bypass_diode_start_cell = -1;
-            SetStatus(app, "Bypass diode placement cancelled");
-        } else {
-            CancelCurrentString(app);
+    if (IsKeyPressed(KEY_ESCAPE)) {
+        if (app->mode == MODE_WIRING) {
+            if (app->placing_bypass_diode) {
+                // Cancel bypass diode placement
+                app->placing_bypass_diode = false;
+                app->bypass_diode_start_cell = -1;
+                SetStatus(app, "Bypass diode placement cancelled");
+            } else {
+                CancelCurrentString(app);
+            }
+        } else if (app->mode == MODE_CELL_PLACEMENT) {
+            // Cancel grid origin setting mode
+            if (app->snap.setting_grid_origin) {
+                app->snap.setting_grid_origin = false;
+                SetStatus(app, "Grid origin setting cancelled");
+            }
+            // Clear selection or cancel drag
+            else if (app->is_drag_selecting || app->is_moving_selection) {
+                app->is_drag_selecting = false;
+                app->is_moving_selection = false;
+            } else if (app->selected_count > 0) {
+                ClearCellSelection(app);
+                SetStatus(app, "Selection cleared");
+            }
+        }
+    }
+
+    // Cell placement mode keyboard shortcuts
+    if (app->mode == MODE_CELL_PLACEMENT) {
+        // Ctrl+A - Select all cells
+        if (IsKeyDown(KEY_LEFT_CONTROL) && IsKeyPressed(KEY_A)) {
+            SelectAllCells(app);
+            SetStatus(app, "Selected all %d cells", app->selected_count);
+        }
+
+        // Delete or Backspace - Delete selected cells
+        if ((IsKeyPressed(KEY_DELETE) || IsKeyPressed(KEY_BACKSPACE)) && app->selected_count > 0) {
+            int count = app->selected_count;
+            DeleteSelectedCells(app);
+            SetStatus(app, "Deleted %d cells", count);
         }
     }
 
@@ -2056,31 +2304,59 @@ void AppUpdate(AppState *app) {
     // Handle mouse picking (only when over 3D view)
     Vector2 mouse = GetMousePosition();
     if (mouse.x > app->sidebar_width && app->mesh_loaded) {
-        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+
+        // Cell placement mode - simple click to place/remove
+        if (app->mode == MODE_CELL_PLACEMENT) {
             Ray ray = GetMouseRay(mouse, app->cam.camera);
 
-            if (app->mode == MODE_CELL_PLACEMENT) {
+            // Grid origin setting mode - takes priority
+            if (app->snap.setting_grid_origin) {
+                RayCollision hit = GetRayCollisionMesh(ray, app->vehicle_mesh, app->vehicle_model.transform);
+                if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && hit.hit) {
+                    // Set grid origin and normal, exit mode
+                    app->snap.grid_origin = hit.point;
+                    app->snap.grid_normal = hit.normal;
+                    app->snap.setting_grid_origin = false;
+                    app->snap.grid_configured = true;
+                    SetStatus(app, "Grid origin set at (%.2f, %.2f, %.2f)", hit.point.x, hit.point.y, hit.point.z);
+                }
+            }
+            // Left click - place or remove cell
+            else if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                 if (app->placing_module && app->selected_module >= 0) {
                     // Place module at clicked location
                     RayCollision hit = GetRayCollisionMesh(ray, app->vehicle_mesh, app->vehicle_model.transform);
                     if (hit.hit) {
                         PlaceModule(app, app->selected_module, hit.point, hit.normal);
-                        // Stay in placing mode for multiple placements
                     }
                 } else {
-                    // Check for existing cell first (to remove)
+                    // Check if clicking on an existing cell
                     int cell_id = FindCellNearRay(app, ray, NULL);
+
                     if (cell_id >= 0) {
+                        // Clicking on existing cell - remove it
                         RemoveCell(app, cell_id);
+                        SetStatus(app, "Removed cell #%d", cell_id);
                     } else {
-                        // Try to place new cell (no overlap check for manual placement)
+                        // Clicked on empty space - place new cell
                         RayCollision hit = GetRayCollisionMesh(ray, app->vehicle_mesh, app->vehicle_model.transform);
                         if (hit.hit) {
-                            PlaceCellEx(app, hit.point, hit.normal, false);
+                            Vector3 snapPos = ApplyGridSnap(app, hit.point);
+                            PlaceCellEx(app, snapPos, hit.normal, false);
                         }
                     }
                 }
-            } else if (app->mode == MODE_WIRING) {
+            }
+
+            // Right click - also removes cell (alternative)
+            if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+                int cell_id = FindCellNearRay(app, ray, NULL);
+                if (cell_id >= 0) {
+                    RemoveCell(app, cell_id);
+                    SetStatus(app, "Removed cell #%d", cell_id);
+                }
+            }
+        } else if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && app->mode == MODE_WIRING) {
                 Ray ray = GetMouseRay(mouse, app->cam.camera);
                 int cell_id = FindCellNearRay(app, ray, NULL);
 
@@ -2110,19 +2386,11 @@ void AppUpdate(AppState *app) {
                         AddCellToString(app, cell_id);
                     }
                 }
-            }
         }
 
-        if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
-            if (app->mode == MODE_CELL_PLACEMENT) {
-                Ray ray = GetMouseRay(mouse, app->cam.camera);
-                int cell_id = FindCellNearRay(app, ray, NULL);
-                if (cell_id >= 0) {
-                    RemoveCell(app, cell_id);
-                }
-            } else if (app->mode == MODE_WIRING) {
-                EndCurrentString(app);
-            }
+        // Right-click in wiring mode ends current string
+        if (app->mode == MODE_WIRING && IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+            EndCurrentString(app);
         }
     }
 }
@@ -2283,6 +2551,89 @@ void DrawWiring(AppState *app) {
     }
 }
 
+// Draw selection highlights for selected cells
+void DrawCellSelectionHighlights(AppState *app) {
+    if (app->selected_count == 0) return;
+    if (app->mode != MODE_CELL_PLACEMENT) return;
+
+    CellPreset *preset = (CellPreset *)&CELL_PRESETS[app->selected_preset];
+    Color selectColor = {255, 200, 50, 255};  // Gold/orange for selection
+
+    for (int i = 0; i < app->cell_count; i++) {
+        if (!app->selected_cells[i]) continue;
+
+        SolarCell *cell = &app->cells[i];
+        Vector3 worldPos = CellGetWorldPosition(app, cell);
+        Vector3 worldNormal = CellGetWorldNormal(app, cell);
+        Vector3 pos = Vector3Add(worldPos, Vector3Scale(worldNormal, CELL_SURFACE_OFFSET + 0.001f));
+
+        Vector3 right = CellGetWorldTangent(app, cell);
+        Vector3 forward = Vector3CrossProduct(worldNormal, right);
+
+        // Make selection outline slightly larger
+        float scale = 1.05f;
+        right = Vector3Scale(right, preset->width / 2 * scale);
+        forward = Vector3Scale(forward, preset->height / 2 * scale);
+
+        Vector3 p1 = Vector3Add(pos, Vector3Add(Vector3Scale(right, -1), Vector3Scale(forward, -1)));
+        Vector3 p2 = Vector3Add(pos, Vector3Add(right, Vector3Scale(forward, -1)));
+        Vector3 p3 = Vector3Add(pos, Vector3Add(right, forward));
+        Vector3 p4 = Vector3Add(pos, Vector3Add(Vector3Scale(right, -1), forward));
+
+        // Draw thick selection outline (draw multiple times offset slightly)
+        DrawLine3D(p1, p2, selectColor);
+        DrawLine3D(p2, p3, selectColor);
+        DrawLine3D(p3, p4, selectColor);
+        DrawLine3D(p4, p1, selectColor);
+    }
+}
+
+// Draw ghost preview of cells being moved
+void DrawMovePreview(AppState *app) {
+    if (!app->is_moving_selection || app->selected_count == 0) return;
+
+    Vector2 mouse = GetMousePosition();
+    Ray ray = GetMouseRay(mouse, app->cam.camera);
+    RayCollision hit = GetRayCollisionMesh(ray, app->vehicle_mesh, app->vehicle_model.transform);
+
+    if (!hit.hit) return;
+
+    Vector3 offset = Vector3Subtract(hit.point, app->move_start_pos);
+    CellPreset *preset = (CellPreset *)&CELL_PRESETS[app->selected_preset];
+    Color ghostColor = {100, 255, 100, 80};  // Semi-transparent green
+
+    for (int i = 0; i < app->cell_count; i++) {
+        if (!app->selected_cells[i]) continue;
+
+        SolarCell *cell = &app->cells[i];
+        Vector3 worldPos = CellGetWorldPosition(app, cell);
+        Vector3 newPos = Vector3Add(worldPos, offset);
+        Vector3 worldNormal = CellGetWorldNormal(app, cell);
+        Vector3 pos = Vector3Add(newPos, Vector3Scale(worldNormal, CELL_SURFACE_OFFSET));
+
+        Vector3 right = CellGetWorldTangent(app, cell);
+        Vector3 forward = Vector3CrossProduct(worldNormal, right);
+
+        right = Vector3Scale(right, preset->width / 2);
+        forward = Vector3Scale(forward, preset->height / 2);
+
+        Vector3 p1 = Vector3Add(pos, Vector3Add(Vector3Scale(right, -1), Vector3Scale(forward, -1)));
+        Vector3 p2 = Vector3Add(pos, Vector3Add(right, Vector3Scale(forward, -1)));
+        Vector3 p3 = Vector3Add(pos, Vector3Add(right, forward));
+        Vector3 p4 = Vector3Add(pos, Vector3Add(Vector3Scale(right, -1), forward));
+
+        DrawTriangle3D(p1, p2, p3, ghostColor);
+        DrawTriangle3D(p1, p3, p4, ghostColor);
+
+        // Draw outline
+        Color outlineColor = {50, 200, 50, 150};
+        DrawLine3D(p1, p2, outlineColor);
+        DrawLine3D(p2, p3, outlineColor);
+        DrawLine3D(p3, p4, outlineColor);
+        DrawLine3D(p4, p1, outlineColor);
+    }
+}
+
 void DrawSelectionRect(AppState *app) {
     if (!app->is_drag_selecting)
         return;
@@ -2308,7 +2659,8 @@ void DrawSelectionRect(AppState *app) {
     int count = 0;
     for (int i = 0; i < app->cell_count; i++) {
         SolarCell *cell = &app->cells[i];
-        if (cell->string_id >= 0)
+        // In wiring mode, skip cells already in a string
+        if (app->mode == MODE_WIRING && cell->string_id >= 0)
             continue;
 
         Vector3 worldPos = CellGetWorldPosition(app, cell);
@@ -2676,6 +3028,9 @@ void AppDraw(AppState *app) {
 
         // Draw auto-layout surface preview
         DrawAutoLayoutPreview(app);
+
+        // Draw snap grid overlay
+        DrawSnapGrid(app);
     }
 
     // Draw cells
@@ -2690,15 +3045,18 @@ void AppDraw(AppState *app) {
     // Draw sun indicator
     DrawSunIndicator(app);
 
-    // Draw ghost cell preview in cell placement mode
-    if (app->mode == MODE_CELL_PLACEMENT && app->mesh_loaded && !app->placing_module) {
+    // Draw ghost cell preview in cell placement mode (not when placing module or setting grid origin)
+    if (app->mode == MODE_CELL_PLACEMENT && app->mesh_loaded && !app->placing_module &&
+        !app->snap.setting_grid_origin) {
         Vector2 mouse = GetMousePosition();
         if (mouse.x > app->sidebar_width) {
             Ray ray = GetMouseRay(mouse, app->cam.camera);
             RayCollision hit = GetRayCollisionMesh(ray, app->vehicle_mesh, app->vehicle_model.transform);
             if (hit.hit && hit.normal.y > 0.1f) {  // Only on upward-facing surfaces
                 CellPreset *preset = (CellPreset *)&CELL_PRESETS[app->selected_preset];
-                Vector3 pos = Vector3Add(hit.point, Vector3Scale(hit.normal, CELL_SURFACE_OFFSET));
+                // Apply grid snap to ghost position
+                Vector3 snapPos = ApplyGridSnap(app, hit.point);
+                Vector3 pos = Vector3Add(snapPos, Vector3Scale(hit.normal, CELL_SURFACE_OFFSET));
 
                 // Calculate tangent exactly like PlaceCell does
                 Vector3 ref = {0, 0, 1};

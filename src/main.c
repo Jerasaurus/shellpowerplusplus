@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "app.h"
+#include "inter_font.h"
 
 // Global font
 static Font appFont = {0};
@@ -26,20 +27,23 @@ int main(int argc, char *argv[]) {
     InitWindow(screenWidth, screenHeight, "Solar Array Designer");
     SetTargetFPS(60);
 
-    // Load custom font
-    appFont = LoadFontEx("assets/Inter-Regular.otf", 18, NULL, 256);
+    // Load embedded Inter font
+    appFont = LoadFontFromMemory(".otf", assets_Inter_Regular_otf,
+                                  assets_Inter_Regular_otf_len, 24, NULL, 256);
+
     if (appFont.texture.id == 0) {
-        // Fallback to default font if custom font not found
+        // Fallback to default font
         appFont = GetFontDefault();
-        TraceLog(LOG_WARNING, "Custom font not found, using default");
+        TraceLog(LOG_WARNING, "Failed to load embedded font, using default");
     } else {
         // Enable font filtering for smoother text
         SetTextureFilter(appFont.texture, TEXTURE_FILTER_BILINEAR);
+        TraceLog(LOG_INFO, "Loaded embedded Inter font");
     }
 
     // Set font for raygui
     GuiSetFont(appFont);
-    GuiSetStyle(DEFAULT, TEXT_SIZE, 16);
+    GuiSetStyle(DEFAULT, TEXT_SIZE, 18);
     GuiSetStyle(DEFAULT, TEXT_SPACING, 1);
 
     // Initialize application state

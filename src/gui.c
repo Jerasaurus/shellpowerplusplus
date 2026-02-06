@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include "app.h"
 #include "lib/tinyfiledialogs.h"
 #include "raygui.h"
@@ -51,10 +52,17 @@ void DrawGUI(AppState *app) {
     int w = app->sidebar_width - 2 * padding;
 
     // Preset dropdown
+    int prev_preset = app->selected_preset;
     if (GuiDropdownBox((Rectangle){padding, g_preset_dropdown_y, w, 25},
                        "Maxeon Gen 3;Maxeon Gen 5;Generic Silicon",
                        &app->selected_preset, g_preset_open)) {
         g_preset_open = !g_preset_open;
+    }
+    // Update grid size when preset changes
+    if (app->selected_preset != prev_preset) {
+        CellPreset *preset = (CellPreset *)&CELL_PRESETS[app->selected_preset];
+        float cell_size = fmaxf(preset->width, preset->height);
+        app->snap.grid_size = cell_size + 0.002f;
     }
 
     // Vis mode dropdown (only after simulation)
@@ -383,6 +391,77 @@ int DrawCellPanel(AppState *app, int x, int y, int w) {
     }
     y += 35;
 
+    // Grid Snap section
+    GuiLine((Rectangle) {x, y, w, 1}, NULL);
+    y += 10;
+
+    GuiLabel((Rectangle) {x, y, w, 20}, "GRID SNAP");
+    y += 25;
+
+    // Enable Grid Snap checkbox
+    GuiCheckBox((Rectangle) {x, y, 20, 20}, "Enable Grid Snap", &app->snap.grid_snap_enabled);
+    y += 24;
+
+    // Show Grid checkbox
+    GuiCheckBox((Rectangle) {x, y, 20, 20}, "Show Grid", &app->snap.show_grid);
+    y += 24;
+
+    // Grid Size text input
+    GuiLabel((Rectangle) {x, y, 60, 20}, "Grid Size:");
+    static char gridSizeText[16] = "0.125";
+    static bool gridSizeEditMode = false;
+    static float lastGridSize = 0.125f;
+
+    if (!gridSizeEditMode && app->snap.grid_size != lastGridSize) {
+        snprintf(gridSizeText, sizeof(gridSizeText), "%.3f", app->snap.grid_size);
+        lastGridSize = app->snap.grid_size;
+    }
+
+    if (GuiTextBox((Rectangle) {x + 65, y, 60, 20}, gridSizeText, 16, gridSizeEditMode)) {
+        gridSizeEditMode = !gridSizeEditMode;
+        if (!gridSizeEditMode) {
+            float newSize = atof(gridSizeText);
+            if (newSize >= 0.01f && newSize <= 1.0f) {
+                app->snap.grid_size = newSize;
+                lastGridSize = newSize;
+            } else {
+                snprintf(gridSizeText, sizeof(gridSizeText), "%.3f", app->snap.grid_size);
+            }
+        }
+    }
+    if (gridSizeEditMode) app->gui_text_editing = true;
+    GuiLabel((Rectangle) {x + 130, y, 20, 20}, "m");
+    y += 24;
+
+    // Rotation slider (0-90 degrees)
+    GuiLabel((Rectangle) {x, y, 55, 20}, "Rotation:");
+    GuiSlider((Rectangle) {x + 60, y, w - 100, 20}, NULL, NULL, &app->snap.grid_rotation, 0, 90);
+    char rotText[16];
+    snprintf(rotText, sizeof(rotText), "%.0f", app->snap.grid_rotation);
+    GuiLabel((Rectangle) {x + w - 35, y, 35, 20}, rotText);
+    y += 24;
+
+    // Set Grid Origin button
+    const char *originBtnText = app->snap.setting_grid_origin ? "[Click Mesh]" : "Set Grid Origin";
+    if (GuiButton((Rectangle) {x, y, w, 25}, originBtnText)) {
+        app->snap.setting_grid_origin = !app->snap.setting_grid_origin;
+        if (app->snap.setting_grid_origin) {
+            SetStatus(app, "Click on mesh to set grid origin");
+        }
+    }
+    y += 28;
+
+    // Show current origin coordinates (or setup requirement)
+    char originText[64];
+    if (app->snap.grid_configured) {
+        snprintf(originText, sizeof(originText), "Origin: (%.2f, %.2f, %.2f)",
+                 app->snap.grid_origin.x, app->snap.grid_origin.y, app->snap.grid_origin.z);
+    } else {
+        snprintf(originText, sizeof(originText), "Origin: not set (required for auto-layout)");
+    }
+    GuiLabel((Rectangle) {x, y, w, 20}, originText);
+    y += 25;
+
     // Module section
     GuiLine((Rectangle) {x, y, w, 1}, NULL);
     y += 10;
@@ -522,9 +601,9 @@ int DrawCellPanel(AppState *app, int x, int y, int w) {
     GuiCheckBox((Rectangle) {x, y, 20, 20}, "Preview valid surfaces", &app->auto_layout.preview_surface);
     y += 24;
 
-    // Grid layout toggle
-    GuiCheckBox((Rectangle) {x, y, 20, 20}, "Use grid layout", &app->auto_layout.use_grid_layout);
-    y += 24;
+    // Auto-layout now always follows the snap grid configuration.
+    GuiLabel((Rectangle) {x, y, w, 20}, "Uses snap grid (size/origin/rotation)");
+    y += 22;
 
     // Height constraint section
     GuiCheckBox((Rectangle) {x, y, 20, 20}, "Limit height (exclude canopy)", &app->auto_layout.use_height_constraint);

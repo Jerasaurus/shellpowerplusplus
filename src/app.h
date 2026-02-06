@@ -163,6 +163,15 @@ typedef struct {
     float grid_size; // Grid cell size in meters
     bool align_to_surface; // Align cell orientation to surface
     bool show_grid; // Show grid overlay
+
+    // Grid positioning
+    Vector3 grid_origin; // Grid anchor point (world coordinates)
+    Vector3 grid_normal; // Normal at grid origin
+    float grid_rotation; // Grid rotation degrees (0-90)
+
+    // Interaction state
+    bool setting_grid_origin; // True when in "set origin" mode
+    bool grid_configured; // True after user explicitly sets grid origin on mesh
 } SnapSettings;
 
 // Simulation results
@@ -271,6 +280,13 @@ typedef struct {
     Vector2 drag_start;
     Vector2 drag_end;
 
+    // Cell selection (for group operations in cell placement mode)
+    bool selected_cells[MAX_CELLS];  // True if cell at index is selected
+    int selected_count;              // Number of currently selected cells
+    bool is_moving_selection;        // True when dragging selected cells
+    Vector3 move_start_pos;          // World position where move started
+    Vector3 move_offset;             // Offset from move start to mesh hit point
+
     // Window
     int screen_width;
     int screen_height;
@@ -307,6 +323,7 @@ void CameraFitToBounds(CameraController *cam, BoundingBox bounds);
 
 // Cells
 int PlaceCell(AppState *app, Vector3 world_position, Vector3 world_normal);
+int PlaceCellEx(AppState *app, Vector3 world_position, Vector3 world_normal, bool check_overlap);
 void RemoveCell(AppState *app, int cell_id);
 void ClearAllCells(AppState *app);
 int FindCellAtPosition(AppState *app, Vector3 pos, float threshold);
@@ -314,6 +331,15 @@ int FindCellNearRay(AppState *app, Ray ray, float *out_distance);
 void UpdateCellVisuals(AppState *app);
 Vector3 CellGetWorldPosition(AppState *app, SolarCell *cell);
 Vector3 CellGetWorldNormal(AppState *app, SolarCell *cell);
+
+// Cell Selection
+void ClearCellSelection(AppState *app);
+void SelectCell(AppState *app, int cell_index, bool add_to_selection);
+void SelectCellsInRect(AppState *app, Vector2 screenMin, Vector2 screenMax, bool add_to_selection);
+void SelectAllCells(AppState *app);
+void DeleteSelectedCells(AppState *app);
+void MoveSelectedCells(AppState *app, Vector3 offset);
+bool IsCellSelected(AppState *app, int cell_index);
 
 // Wiring
 int StartNewString(AppState *app);

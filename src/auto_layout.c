@@ -298,6 +298,15 @@ int RunAutoLayout(AppState *app) {
         return 0;
     }
 
+    if (!app->snap.grid_snap_enabled) {
+        SetStatus(app, "Auto-layout requires grid snap: enable Grid Snap first");
+        return 0;
+    }
+    if (!app->snap.grid_configured) {
+        SetStatus(app, "Auto-layout requires grid setup: click Set Grid Origin first");
+        return 0;
+    }
+
     if (app->auto_layout.use_height_constraint && app->auto_layout.auto_detect_height) {
         AutoDetectHeightRange(app);
     }
@@ -321,142 +330,104 @@ int RunAutoLayout(AppState *app) {
     LayoutCandidate *candidates = (LayoutCandidate *)malloc(MAX_CANDIDATES * sizeof(LayoutCandidate));
     int candidate_count = 0;
 
-    float grid_spacing = app->auto_layout.grid_spacing;
+    float grid_spacing = app->snap.grid_size;
     if (grid_spacing <= 0) {
-        grid_spacing = fmaxf(preset->width, preset->height) * MIN_CELL_DISTANCE_FACTOR;
+        free(candidates);
+        app->auto_layout_running = false;
+        app->auto_layout_progress = 0;
+        SetStatus(app, "Auto-layout requires a positive snap grid size");
+        return 0;
     }
 
-    float min_spacing = grid_spacing;
+    // Auto-layout now always follows the user-defined snap grid basis.
+    Vector3 grid_origin = app->snap.grid_origin;
+    Vector3 grid_normal = Vector3Normalize(app->snap.grid_normal);
+    if (Vector3Length(grid_normal) < 0.001f) {
+        grid_normal = (Vector3){0, 1, 0};
+    }
 
-    if (app->auto_layout.use_grid_layout) {
-        float minX = app->mesh_bounds.min.x;
-        float maxX = app->mesh_bounds.max.x;
-        float minZ = app->mesh_bounds.min.z;
-        float maxZ = app->mesh_bounds.max.z;
+    Vector3 tangent1, tangent2;
+    Vector3 ref = (Vector3){0, 0, 1};
+    if (fabsf(Vector3DotProduct(grid_normal, ref)) > 0.9f) {
+        ref = (Vector3){1, 0, 0};
+    }
+    tangent1 = Vector3Normalize(Vector3CrossProduct(ref, grid_normal));
+    tangent2 = Vector3Normalize(Vector3CrossProduct(grid_normal, tangent1));
 
-        int gridX = (int)((maxX - minX) / grid_spacing) + 1;
-        int gridZ = (int)((maxZ - minZ) / grid_spacing) + 1;
-        int totalGridPoints = gridX * gridZ;
-        SetStatus(app, "Auto-layout: scanning %dx%d grid...", gridX, gridZ);
+    float rotRad = app->snap.grid_rotation * DEG2RAD;
+    float cosR = cosf(rotRad);
+    float sinR = sinf(rotRad);
+    Vector3 rotT1 = Vector3Add(Vector3Scale(tangent1, cosR), Vector3Scale(tangent2, sinR));
+    Vector3 rotT2 = Vector3Add(Vector3Scale(tangent1, -sinR), Vector3Scale(tangent2, cosR));
+    tangent1 = rotT1;
+    tangent2 = rotT2;
 
-        int processed = 0;
-        for (int gx = 0; gx < gridX && candidate_count < MAX_CANDIDATES; gx++) {
-            for (int gz = 0; gz < gridZ && candidate_count < MAX_CANDIDATES; gz++) {
-                float x = minX + gx * grid_spacing;
-                float z = minZ + gz * grid_spacing;
+    Vector3 boundsCorners[8] = {
+        {app->mesh_bounds.min.x, app->mesh_bounds.min.y, app->mesh_bounds.min.z},
+        {app->mesh_bounds.max.x, app->mesh_bounds.min.y, app->mesh_bounds.min.z},
+        {app->mesh_bounds.min.x, app->mesh_bounds.max.y, app->mesh_bounds.min.z},
+        {app->mesh_bounds.max.x, app->mesh_bounds.max.y, app->mesh_bounds.min.z},
+        {app->mesh_bounds.min.x, app->mesh_bounds.min.y, app->mesh_bounds.max.z},
+        {app->mesh_bounds.max.x, app->mesh_bounds.min.y, app->mesh_bounds.max.z},
+        {app->mesh_bounds.min.x, app->mesh_bounds.max.y, app->mesh_bounds.max.z},
+        {app->mesh_bounds.max.x, app->mesh_bounds.max.y, app->mesh_bounds.max.z}
+    };
 
-                Ray ray;
-                ray.position = (Vector3){x, app->mesh_bounds.max.y + 1.0f, z};
-                ray.direction = (Vector3){0, -1, 0};
+    float minU = 1e9f, maxU = -1e9f;
+    float minV = 1e9f, maxV = -1e9f;
+    for (int i = 0; i < 8; i++) {
+        Vector3 rel = Vector3Subtract(boundsCorners[i], grid_origin);
+        float u = Vector3DotProduct(rel, tangent1);
+        float v = Vector3DotProduct(rel, tangent2);
+        if (u < minU) minU = u;
+        if (u > maxU) maxU = u;
+        if (v < minV) minV = v;
+        if (v > maxV) maxV = v;
+    }
 
-                RayCollision hit = GetRayCollisionMesh(ray, *mesh, transform);
-                if (!hit.hit)
-                    continue;
+    int uStart = (int)floorf(minU / grid_spacing) - 1;
+    int uEnd = (int)ceilf(maxU / grid_spacing) + 1;
+    int vStart = (int)floorf(minV / grid_spacing) - 1;
+    int vEnd = (int)ceilf(maxV / grid_spacing) + 1;
 
-                Vector3 position = hit.point;
-                Vector3 normal = hit.normal;
+    int gridU = (uEnd - uStart) + 1;
+    int gridV = (vEnd - vStart) + 1;
+    SetStatus(app, "Auto-layout: scanning %dx%d grid...", gridU, gridV);
 
-                if (!IsValidSurface(app, position, normal))
-                    continue;
+    for (int gu = uStart; gu <= uEnd && candidate_count < MAX_CANDIDATES; gu++) {
+        for (int gv = vStart; gv <= vEnd && candidate_count < MAX_CANDIDATES; gv++) {
+            float u = ((float)gu + 0.5f) * grid_spacing;
+            float v = ((float)gv + 0.5f) * grid_spacing;
+            Vector3 gridPoint = grid_origin;
+            gridPoint = Vector3Add(gridPoint, Vector3Scale(tangent1, u));
+            gridPoint = Vector3Add(gridPoint, Vector3Scale(tangent2, v));
 
-                bool too_close = false;
-                for (int c = 0; c < candidate_count; c++) {
-                    if (Vector3Distance(position, candidates[c].position) < min_spacing * 0.9f) {
-                        too_close = true;
-                        break;
-                    }
-                }
-                if (too_close)
-                    continue;
+            Ray ray;
+            ray.position = (Vector3){gridPoint.x, app->mesh_bounds.max.y + 1.0f, gridPoint.z};
+            ray.direction = (Vector3){0, -1, 0};
 
-                for (int c = 0; c < app->cell_count; c++) {
-                    Vector3 existingPos = CellGetWorldPosition(app, &app->cells[c]);
-                    if (Vector3Distance(position, existingPos) < min_spacing) {
-                        too_close = true;
-                        break;
-                    }
-                }
-                if (too_close)
-                    continue;
-
-                candidates[candidate_count].position = position;
-                candidates[candidate_count].normal = normal;
-                candidates[candidate_count].occlusion_score = 0.0f;
-                candidates[candidate_count].valid = true;
-                candidate_count++;
-
-                processed++;
-                if (processed % 100 == 0) {
-                    app->auto_layout_progress = (processed * 30) / totalGridPoints;
-                }
-            }
-        }
-    } else {
-        float *vertices = mesh->vertices;
-        unsigned short *indices = mesh->indices;
-        int triangleCount = mesh->triangleCount;
-
-        for (int i = 0; i < triangleCount && candidate_count < MAX_CANDIDATES; i++) {
-            int idx0, idx1, idx2;
-            if (indices) {
-                idx0 = indices[i * 3 + 0];
-                idx1 = indices[i * 3 + 1];
-                idx2 = indices[i * 3 + 2];
-            } else {
-                idx0 = i * 3 + 0;
-                idx1 = i * 3 + 1;
-                idx2 = i * 3 + 2;
-            }
-
-            Vector3 v0 = {vertices[idx0 * 3], vertices[idx0 * 3 + 1], vertices[idx0 * 3 + 2]};
-            Vector3 v1 = {vertices[idx1 * 3], vertices[idx1 * 3 + 1], vertices[idx1 * 3 + 2]};
-            Vector3 v2 = {vertices[idx2 * 3], vertices[idx2 * 3 + 1], vertices[idx2 * 3 + 2]};
-
-            v0 = Vector3Transform(v0, transform);
-            v1 = Vector3Transform(v1, transform);
-            v2 = Vector3Transform(v2, transform);
-
-            Vector3 edge1 = Vector3Subtract(v1, v0);
-            Vector3 edge2 = Vector3Subtract(v2, v0);
-            Vector3 normal = Vector3Normalize(Vector3CrossProduct(edge1, edge2));
-
-            Vector3 center = {
-                (v0.x + v1.x + v2.x) / 3.0f,
-                (v0.y + v1.y + v2.y) / 3.0f,
-                (v0.z + v1.z + v2.z) / 3.0f
-            };
-
-            if (!IsValidSurface(app, center, normal))
+            RayCollision hit = GetRayCollisionMesh(ray, *mesh, transform);
+            if (!hit.hit)
                 continue;
 
-            bool too_close = false;
-            for (int c = 0; c < candidate_count; c++) {
-                if (Vector3Distance(center, candidates[c].position) < min_spacing) {
-                    too_close = true;
-                    break;
-                }
-            }
-            if (too_close)
+            Vector3 position = hit.point;
+            Vector3 normal = hit.normal;
+
+            if (!IsValidSurface(app, position, normal))
                 continue;
 
-            for (int c = 0; c < app->cell_count; c++) {
-                Vector3 existingPos = CellGetWorldPosition(app, &app->cells[c]);
-                if (Vector3Distance(center, existingPos) < min_spacing) {
-                    too_close = true;
-                    break;
-                }
-            }
-            if (too_close)
+            // Avoid stacking on an existing cell while preserving user-defined spacing.
+            if (FindCellAtPosition(app, position, 0.005f) >= 0) {
                 continue;
+            }
 
-            candidates[candidate_count].position = center;
+            candidates[candidate_count].position = position;
             candidates[candidate_count].normal = normal;
             candidates[candidate_count].occlusion_score = 0.0f;
             candidates[candidate_count].valid = true;
             candidate_count++;
-
-            app->auto_layout_progress = (i * 30) / triangleCount;
         }
+        app->auto_layout_progress = 30;
     }
 
     SetStatus(app, "Auto-layout: scoring %d candidates...", candidate_count);
@@ -479,23 +450,13 @@ int RunAutoLayout(AppState *app) {
         }
     }
 
-    // Place cells at best positions
+    // Place cells directly on valid snap-grid positions (same overlap behavior as manual grid placement).
     int placed = 0;
     for (int i = 0; i < candidate_count && placed < target_cells; i++) {
-        if (!candidates[i].valid)
-            continue;
-
-        int id = PlaceCell(app, candidates[i].position, candidates[i].normal);
+        int id = PlaceCellEx(app, candidates[i].position, candidates[i].normal, false);
         if (id >= 0) {
             placed++;
-
-            for (int j = i + 1; j < candidate_count; j++) {
-                if (Vector3Distance(candidates[i].position, candidates[j].position) < min_spacing) {
-                    candidates[j].valid = false;
-                }
-            }
         }
-
         if (target_cells > 0) {
             app->auto_layout_progress = 80 + (placed * 20) / target_cells;
         }
