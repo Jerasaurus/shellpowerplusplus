@@ -402,6 +402,9 @@ bool OpenFileDialog(char *outPath, int maxLen, const char *filter);
 bool SaveProject(AppState *app, const char *path);
 bool LoadProject(AppState *app, const char *path);
 
+// DXF export (top-down 2D layout for CAD projection)
+bool ExportLayoutDXF(AppState *app, const char *path);
+
 // Update checking
 void CheckForUpdatesOnStartup(AppState *app);
 

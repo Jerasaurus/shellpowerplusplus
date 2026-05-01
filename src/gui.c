@@ -27,6 +27,39 @@ bool OpenFileDialog(char *outPath, int maxLen, const char *filter) {
     return false;
 }
 
+static bool OpenProjectDialog(char *outPath, int maxLen) {
+    char const *patterns[] = {"*.shp", "*.SHP"};
+    char *result = tinyfd_openFileDialog("Open Shellpower Project", "", 2, patterns, "Shellpower project (*.shp)", 0);
+    if (result) {
+        strncpy(outPath, result, maxLen - 1);
+        outPath[maxLen - 1] = '\0';
+        return true;
+    }
+    return false;
+}
+
+static bool SaveProjectDialog(char *outPath, int maxLen) {
+    char const *patterns[] = {"*.shp"};
+    char *result = tinyfd_saveFileDialog("Save Shellpower Project", "project.shp", 1, patterns, "Shellpower project (*.shp)");
+    if (result) {
+        strncpy(outPath, result, maxLen - 1);
+        outPath[maxLen - 1] = '\0';
+        return true;
+    }
+    return false;
+}
+
+static bool SaveDxfDialog(char *outPath, int maxLen) {
+    char const *patterns[] = {"*.dxf"};
+    char *result = tinyfd_saveFileDialog("Export Layout to DXF", "layout.dxf", 1, patterns, "DXF drawing (*.dxf)");
+    if (result) {
+        strncpy(outPath, result, maxLen - 1);
+        outPath[maxLen - 1] = '\0';
+        return true;
+    }
+    return false;
+}
+
 //------------------------------------------------------------------------------
 // GUI Drawing
 //------------------------------------------------------------------------------
@@ -125,8 +158,12 @@ void DrawSidebar(AppState *app) {
     y += 22;
 
     int bw = (w - 6) / 4;
-    if (GuiButton((Rectangle) {padding, y, bw, 25}, app->mode == MODE_IMPORT ? "#12#Import" : "Import"))
+    if (GuiButton((Rectangle) {padding, y, bw, 25}, app->mode == MODE_IMPORT ? "#12#Import" : "Import")) {
+        if (app->mode != MODE_IMPORT && app->cam.is_orthographic) {
+            CameraSetOrthographic(&app->cam, false);
+        }
         app->mode = MODE_IMPORT;
+    }
     if (GuiButton((Rectangle) {padding + bw + 2, y, bw, 25}, app->mode == MODE_CELL_PLACEMENT ? "#12#Cells" : "Cells"))
         app->mode = MODE_CELL_PLACEMENT;
     if (GuiButton((Rectangle) {padding + 2 * (bw + 2), y, bw, 25}, app->mode == MODE_WIRING ? "#12#Wire" : "Wire"))
@@ -357,6 +394,61 @@ int DrawImportPanel(AppState *app, int x, int y, int w) {
         GuiLabel((Rectangle) {x, y, w, 20}, "No mesh loaded");
         y += 25;
     }
+
+    // Project save / load + DXF export
+    GuiLine((Rectangle) {x, y, w, 1}, NULL);
+    y += 10;
+
+    GuiLabel((Rectangle) {x, y, w, 20}, "PROJECT");
+    y += 25;
+
+    int half = (w - 4) / 2;
+    if (GuiButton((Rectangle) {x, y, half, 25}, "#02#Save Project")) {
+        char path[MAX_PATH_LENGTH] = {0};
+        if (SaveProjectDialog(path, MAX_PATH_LENGTH)) {
+            // Append .shp if user didn't include an extension
+            const char *dot = strrchr(path, '.');
+            const char *slash = strrchr(path, '/');
+            const char *bslash = strrchr(path, '\\');
+            const char *lastSep = slash > bslash ? slash : bslash;
+            if (!dot || (lastSep && dot < lastSep)) {
+                size_t len = strlen(path);
+                if (len + 4 < MAX_PATH_LENGTH) {
+                    strcpy(path + len, ".shp");
+                }
+            }
+            SaveProject(app, path);
+        }
+    }
+    if (GuiButton((Rectangle) {x + half + 4, y, half, 25}, "#01#Load Project")) {
+        char path[MAX_PATH_LENGTH] = {0};
+        if (OpenProjectDialog(path, MAX_PATH_LENGTH)) {
+            LoadProject(app, path);
+        }
+    }
+    y += 30;
+
+    if (GuiButton((Rectangle) {x, y, w, 25}, "#07#Export DXF (Top-Down, mm)")) {
+        if (app->cell_count == 0) {
+            SetStatus(app, "Place cells before exporting");
+        } else {
+            char path[MAX_PATH_LENGTH] = {0};
+            if (SaveDxfDialog(path, MAX_PATH_LENGTH)) {
+                const char *dot = strrchr(path, '.');
+                const char *slash = strrchr(path, '/');
+                const char *bslash = strrchr(path, '\\');
+                const char *lastSep = slash > bslash ? slash : bslash;
+                if (!dot || (lastSep && dot < lastSep)) {
+                    size_t len = strlen(path);
+                    if (len + 4 < MAX_PATH_LENGTH) {
+                        strcpy(path + len, ".dxf");
+                    }
+                }
+                ExportLayoutDXF(app, path);
+            }
+        }
+    }
+    y += 30;
 
     return y;
 }

@@ -3112,3 +3112,399 @@ void AppDraw(AppState *app) {
     // Draw GUI
     DrawGUI(app);
 }
+
+//------------------------------------------------------------------------------
+// Project Save / Load
+//------------------------------------------------------------------------------
+//
+// Simple line-based plain-text format. One record per line, fields
+// space-separated. Sections introduced by COUNT lines (CELLS N / STRINGS N /
+// BYPASSES N) so the loader knows how many lines follow. MESH_PATH may contain
+// spaces — it is the entire remainder of its line.
+
+#define PROJECT_FILE_MAGIC "SHELLPOWER_PROJECT"
+#define PROJECT_FILE_VERSION 2
+
+// Returns the basename portion of a path (after the last / or \).
+static const char *PathBasename(const char *path) {
+    const char *slash = strrchr(path, '/');
+    const char *bslash = strrchr(path, '\\');
+    const char *last = slash > bslash ? slash : bslash;
+    return last ? last + 1 : path;
+}
+
+// Writes the directory portion (with trailing separator) of path into out.
+// If path has no directory portion, out becomes empty.
+static void PathDirname(const char *path, char *out, size_t out_size) {
+    const char *slash = strrchr(path, '/');
+    const char *bslash = strrchr(path, '\\');
+    const char *last = slash > bslash ? slash : bslash;
+    if (!last) {
+        if (out_size > 0) out[0] = '\0';
+        return;
+    }
+    size_t len = (size_t)(last - path) + 1;
+    if (len >= out_size) len = out_size - 1;
+    memcpy(out, path, len);
+    out[len] = '\0';
+}
+
+bool SaveProject(AppState *app, const char *path) {
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        SetStatus(app, "Failed to open project file for writing");
+        return false;
+    }
+
+    fprintf(f, "%s %d\n", PROJECT_FILE_MAGIC, PROJECT_FILE_VERSION);
+
+    // Embed the mesh file bytes if we have one loaded.
+    if (app->mesh_loaded && app->mesh_path[0]) {
+        FILE *mf = fopen(app->mesh_path, "rb");
+        if (mf) {
+            fseek(mf, 0, SEEK_END);
+            long sz = ftell(mf);
+            fseek(mf, 0, SEEK_SET);
+            if (sz > 0) {
+                unsigned char *buf = (unsigned char *)malloc((size_t)sz);
+                if (buf) {
+                    size_t r = fread(buf, 1, (size_t)sz, mf);
+                    if (r == (size_t)sz) {
+                        fprintf(f, "MESH_NAME %s\n", PathBasename(app->mesh_path));
+                        fprintf(f, "MESH_SIZE %ld\n", sz);
+                        fprintf(f, "MESH_BEGIN\n");
+                        fwrite(buf, 1, (size_t)sz, f);
+                        fprintf(f, "\n");
+                    }
+                    free(buf);
+                }
+            }
+            fclose(mf);
+        }
+    }
+
+    fprintf(f, "MESH_SCALE %.9f\n", app->mesh_scale);
+    fprintf(f, "MESH_ROT %.6f %.6f %.6f\n", app->mesh_rotation.x, app->mesh_rotation.y, app->mesh_rotation.z);
+    fprintf(f, "PRESET %d\n", app->selected_preset);
+    fprintf(f, "SIM %.6f %.6f %d %d %d %.6f %.6f\n", app->sim_settings.latitude, app->sim_settings.longitude,
+            app->sim_settings.year, app->sim_settings.month, app->sim_settings.day, app->sim_settings.hour,
+            app->sim_settings.irradiance);
+    fprintf(f, "NEXT %d %d %d\n", app->next_cell_id, app->next_string_id, app->next_bypass_diode_id);
+
+    fprintf(f, "CELLS %d\n", app->cell_count);
+    for (int i = 0; i < app->cell_count; i++) {
+        SolarCell *c = &app->cells[i];
+        fprintf(f, "CELL %d %.9f %.9f %.9f %.9f %.9f %.9f %.9f %.9f %.9f %d %d %d\n", c->id, c->local_position.x,
+                c->local_position.y, c->local_position.z, c->local_tangent.x, c->local_tangent.y, c->local_tangent.z,
+                c->local_normal.x, c->local_normal.y, c->local_normal.z, c->string_id, c->order_in_string,
+                c->has_bypass_diode ? 1 : 0);
+    }
+
+    fprintf(f, "STRINGS %d\n", app->string_count);
+    for (int s = 0; s < app->string_count; s++) {
+        CellString *str = &app->strings[s];
+        fprintf(f, "STRING %d %d %d %d %d", str->id, str->color.r, str->color.g, str->color.b, str->cell_count);
+        for (int k = 0; k < str->cell_count; k++) {
+            fprintf(f, " %d", str->cell_ids[k]);
+        }
+        fprintf(f, "\n");
+    }
+
+    fprintf(f, "BYPASSES %d\n", app->bypass_diode_count);
+    for (int b = 0; b < app->bypass_diode_count; b++) {
+        BypassDiode *d = &app->bypass_diodes[b];
+        fprintf(f, "BYPASS %d %d %d %d\n", d->id, d->string_id, d->start_cell_id, d->end_cell_id);
+    }
+
+    fprintf(f, "END\n");
+    fclose(f);
+    SetStatus(app, "Saved project: %s", path);
+    return true;
+}
+
+bool LoadProject(AppState *app, const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        SetStatus(app, "Failed to open project file");
+        return false;
+    }
+
+    char line[1024];
+    if (!fgets(line, sizeof(line), f)) {
+        fclose(f);
+        SetStatus(app, "Project file is empty");
+        return false;
+    }
+    int version = 0;
+    if (sscanf(line, "SHELLPOWER_PROJECT %d", &version) != 1 || version != PROJECT_FILE_VERSION) {
+        fclose(f);
+        SetStatus(app, "Unsupported project file format (need v%d)", PROJECT_FILE_VERSION);
+        return false;
+    }
+
+    // Reset existing state. Don't unload mesh yet — we'll reload from the bundled bytes.
+    app->cell_count = 0;
+    app->string_count = 0;
+    app->bypass_diode_count = 0;
+    app->active_string_id = -1;
+    app->placing_bypass_diode = false;
+    app->bypass_diode_start_cell = -1;
+
+    char loaded_mesh_path[MAX_PATH_LENGTH] = {0};
+    char mesh_name[MAX_PATH_LENGTH] = {0};
+    long mesh_size = 0;
+    bool ok = true;
+
+    while (fgets(line, sizeof(line), f)) {
+        // Strip trailing newline
+        size_t len = strlen(line);
+        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
+            line[--len] = '\0';
+        }
+        if (len == 0) continue;
+
+        if (strncmp(line, "END", 3) == 0) {
+            break;
+        } else if (strncmp(line, "MESH_NAME ", 10) == 0) {
+            strncpy(mesh_name, line + 10, MAX_PATH_LENGTH - 1);
+            mesh_name[MAX_PATH_LENGTH - 1] = '\0';
+        } else if (strncmp(line, "MESH_SIZE ", 10) == 0) {
+            sscanf(line + 10, "%ld", &mesh_size);
+        } else if (strncmp(line, "MESH_BEGIN", 10) == 0) {
+            // Extract bundled mesh bytes to a sibling file next to the .shp
+            // so LoadVehicleMesh can open it as a regular file.
+            char dir[MAX_PATH_LENGTH] = {0};
+            PathDirname(path, dir, sizeof(dir));
+            const char *basename = mesh_name[0] ? mesh_name : "bundled_mesh.obj";
+            int written = snprintf(loaded_mesh_path, sizeof(loaded_mesh_path), "%s%s", dir, basename);
+            if (written <= 0 || written >= (int)sizeof(loaded_mesh_path) || mesh_size <= 0) {
+                ok = false;
+                fseek(f, mesh_size > 0 ? mesh_size : 0, SEEK_CUR);
+            } else {
+                FILE *mf = fopen(loaded_mesh_path, "wb");
+                unsigned char buf[8192];
+                long remaining = mesh_size;
+                while (remaining > 0) {
+                    size_t want = remaining > (long)sizeof(buf) ? sizeof(buf) : (size_t)remaining;
+                    size_t got = fread(buf, 1, want, f);
+                    if (got == 0) { ok = false; break; }
+                    if (mf) fwrite(buf, 1, got, mf);
+                    remaining -= got;
+                }
+                if (mf) fclose(mf);
+                else { ok = false; loaded_mesh_path[0] = '\0'; }
+                // Consume trailing newline after the binary block
+                int ch = fgetc(f);
+                if (ch != '\n' && ch != EOF) ungetc(ch, f);
+            }
+        } else if (strncmp(line, "MESH_SCALE ", 11) == 0) {
+            sscanf(line + 11, "%f", &app->mesh_scale);
+        } else if (strncmp(line, "MESH_ROT ", 9) == 0) {
+            sscanf(line + 9, "%f %f %f", &app->mesh_rotation.x, &app->mesh_rotation.y, &app->mesh_rotation.z);
+        } else if (strncmp(line, "PRESET ", 7) == 0) {
+            sscanf(line + 7, "%d", &app->selected_preset);
+            if (app->selected_preset < 0 || app->selected_preset >= CELL_PRESET_COUNT) {
+                app->selected_preset = 0;
+            }
+        } else if (strncmp(line, "SIM ", 4) == 0) {
+            sscanf(line + 4, "%f %f %d %d %d %f %f", &app->sim_settings.latitude, &app->sim_settings.longitude,
+                   &app->sim_settings.year, &app->sim_settings.month, &app->sim_settings.day, &app->sim_settings.hour,
+                   &app->sim_settings.irradiance);
+        } else if (strncmp(line, "NEXT ", 5) == 0) {
+            sscanf(line + 5, "%d %d %d", &app->next_cell_id, &app->next_string_id, &app->next_bypass_diode_id);
+        } else if (strncmp(line, "CELLS ", 6) == 0) {
+            int n = 0;
+            sscanf(line + 6, "%d", &n);
+            for (int i = 0; i < n; i++) {
+                if (!fgets(line, sizeof(line), f)) { ok = false; break; }
+                if (app->cell_count >= MAX_CELLS) continue;
+                SolarCell *c = &app->cells[app->cell_count];
+                int has_bypass = 0;
+                int parsed = sscanf(line, "CELL %d %f %f %f %f %f %f %f %f %f %d %d %d", &c->id, &c->local_position.x,
+                                    &c->local_position.y, &c->local_position.z, &c->local_tangent.x,
+                                    &c->local_tangent.y, &c->local_tangent.z, &c->local_normal.x, &c->local_normal.y,
+                                    &c->local_normal.z, &c->string_id, &c->order_in_string, &has_bypass);
+                if (parsed != 13) { ok = false; continue; }
+                c->has_bypass_diode = has_bypass != 0;
+                c->is_shaded = false;
+                c->is_bypassed = false;
+                c->power_output = 0;
+                c->current_output = 0;
+                c->voltage_output = 0;
+                app->cell_count++;
+            }
+        } else if (strncmp(line, "STRINGS ", 8) == 0) {
+            int n = 0;
+            sscanf(line + 8, "%d", &n);
+            for (int i = 0; i < n; i++) {
+                if (!fgets(line, sizeof(line), f)) { ok = false; break; }
+                if (app->string_count >= MAX_STRINGS) continue;
+                CellString *str = &app->strings[app->string_count];
+                int r, g, b, cc;
+                int consumed = 0;
+                int parsed = sscanf(line, "STRING %d %d %d %d %d%n", &str->id, &r, &g, &b, &cc, &consumed);
+                if (parsed != 5) { ok = false; continue; }
+                str->color = (Color){(unsigned char)r, (unsigned char)g, (unsigned char)b, 230};
+                str->cell_count = cc > MAX_CELLS_PER_STRING ? MAX_CELLS_PER_STRING : cc;
+                str->total_power = 0;
+                str->total_energy_wh = 0;
+                str->string_current = 0;
+                str->string_voltage = 0;
+                str->bypassed_count = 0;
+                str->power_ideal = 0;
+                const char *p = line + consumed;
+                for (int k = 0; k < str->cell_count; k++) {
+                    int id = -1;
+                    int n2 = 0;
+                    if (sscanf(p, " %d%n", &id, &n2) != 1) { ok = false; break; }
+                    str->cell_ids[k] = id;
+                    p += n2;
+                }
+                app->string_count++;
+            }
+        } else if (strncmp(line, "BYPASSES ", 9) == 0) {
+            int n = 0;
+            sscanf(line + 9, "%d", &n);
+            for (int i = 0; i < n; i++) {
+                if (!fgets(line, sizeof(line), f)) { ok = false; break; }
+                if (app->bypass_diode_count >= MAX_BYPASS_DIODES) continue;
+                BypassDiode *d = &app->bypass_diodes[app->bypass_diode_count];
+                int parsed = sscanf(line, "BYPASS %d %d %d %d", &d->id, &d->string_id, &d->start_cell_id,
+                                    &d->end_cell_id);
+                if (parsed != 4) { ok = false; continue; }
+                CellPreset *preset = (CellPreset *)&CELL_PRESETS[app->selected_preset];
+                d->voltage_drop = preset->bypass_v_drop;
+                d->is_conducting = false;
+                app->bypass_diode_count++;
+            }
+        }
+    }
+    fclose(f);
+
+    if (!ok) {
+        SetStatus(app, "Project file had parse errors; loaded what I could");
+    }
+
+    // Reload mesh now that scale/rotation are restored
+    if (loaded_mesh_path[0]) {
+        if (LoadVehicleMesh(app, loaded_mesh_path)) {
+            UpdateMeshTransform(app);
+        } else {
+            SetStatus(app, "Project loaded but bundled mesh failed to import");
+        }
+    }
+
+    // Bookkeeping: bump next-id counters past any loaded ids in case the file
+    // was hand-edited or written by an older version.
+    for (int i = 0; i < app->cell_count; i++) {
+        if (app->cells[i].id >= app->next_cell_id) app->next_cell_id = app->cells[i].id + 1;
+    }
+    for (int s = 0; s < app->string_count; s++) {
+        if (app->strings[s].id >= app->next_string_id) app->next_string_id = app->strings[s].id + 1;
+    }
+    for (int b = 0; b < app->bypass_diode_count; b++) {
+        if (app->bypass_diodes[b].id >= app->next_bypass_diode_id) {
+            app->next_bypass_diode_id = app->bypass_diodes[b].id + 1;
+        }
+    }
+
+    SetStatus(app, "Loaded project: %d cells, %d strings, %d bypass diodes", app->cell_count, app->string_count,
+              app->bypass_diode_count);
+    return true;
+}
+
+//------------------------------------------------------------------------------
+// DXF Export (top-down 2D layout)
+//------------------------------------------------------------------------------
+//
+// Writes a minimal AutoCAD R12 DXF with the cell footprints projected onto the
+// world XZ plane (looking down the +Y axis). One LWPOLYLINE per cell on layer
+// CELLS, one LINE per string segment on layer WIRING. Output units are
+// millimeters (world coordinates × 1000) so the file imports directly into
+// CAD packages that default to mm.
+
+static void DXFWriteHeader(FILE *f) {
+    fprintf(f, "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n0\nENDSEC\n");
+    fprintf(f, "0\nSECTION\n2\nTABLES\n");
+    fprintf(f, "0\nTABLE\n2\nLAYER\n70\n2\n");
+    fprintf(f, "0\nLAYER\n2\nCELLS\n70\n0\n62\n5\n6\nCONTINUOUS\n");   // blue
+    fprintf(f, "0\nLAYER\n2\nWIRING\n70\n0\n62\n1\n6\nCONTINUOUS\n");  // red
+    fprintf(f, "0\nENDTAB\n0\nENDSEC\n");
+    fprintf(f, "0\nSECTION\n2\nENTITIES\n");
+}
+
+static void DXFWriteFooter(FILE *f) {
+    fprintf(f, "0\nENDSEC\n0\nEOF\n");
+}
+
+bool ExportLayoutDXF(AppState *app, const char *path) {
+    if (app->cell_count == 0) {
+        SetStatus(app, "No cells to export");
+        return false;
+    }
+
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        SetStatus(app, "Failed to open DXF file for writing");
+        return false;
+    }
+
+    DXFWriteHeader(f);
+
+    CellPreset *preset = (CellPreset *)&CELL_PRESETS[app->selected_preset];
+    const float MM = 1000.0f;  // world meters → DXF millimeters
+
+    // Cells: one closed LWPOLYLINE each, projected to XZ plane
+    for (int i = 0; i < app->cell_count; i++) {
+        SolarCell *cell = &app->cells[i];
+        Vector3 worldPos = CellGetWorldPosition(app, cell);
+        Vector3 worldNormal = CellGetWorldNormal(app, cell);
+        Vector3 right = CellGetWorldTangent(app, cell);
+        Vector3 forward = Vector3CrossProduct(worldNormal, right);
+
+        right = Vector3Scale(right, preset->width / 2);
+        forward = Vector3Scale(forward, preset->height / 2);
+
+        Vector3 corners[4] = {
+            Vector3Add(worldPos, Vector3Add(Vector3Scale(right, -1), Vector3Scale(forward, -1))),
+            Vector3Add(worldPos, Vector3Add(right, Vector3Scale(forward, -1))),
+            Vector3Add(worldPos, Vector3Add(right, forward)),
+            Vector3Add(worldPos, Vector3Add(Vector3Scale(right, -1), forward)),
+        };
+
+        fprintf(f, "0\nLWPOLYLINE\n8\nCELLS\n90\n4\n70\n1\n");
+        for (int k = 0; k < 4; k++) {
+            // DXF X = world X, DXF Y = world Z. Multiply by MM for millimeters.
+            fprintf(f, "10\n%.4f\n20\n%.4f\n", corners[k].x * MM, corners[k].z * MM);
+        }
+    }
+
+    // String wiring: connect cells in order_in_string sequence
+    for (int s = 0; s < app->string_count; s++) {
+        CellString *str = &app->strings[s];
+        if (str->cell_count < 2) continue;
+
+        Vector3 prev = {0};
+        bool have_prev = false;
+        for (int order = 0; order < str->cell_count; order++) {
+            for (int c = 0; c < app->cell_count; c++) {
+                if (app->cells[c].string_id == str->id && app->cells[c].order_in_string == order) {
+                    Vector3 wp = CellGetWorldPosition(app, &app->cells[c]);
+                    if (have_prev) {
+                        fprintf(f, "0\nLINE\n8\nWIRING\n");
+                        fprintf(f, "10\n%.4f\n20\n%.4f\n", prev.x * MM, prev.z * MM);
+                        fprintf(f, "11\n%.4f\n21\n%.4f\n", wp.x * MM, wp.z * MM);
+                    }
+                    prev = wp;
+                    have_prev = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    DXFWriteFooter(f);
+    fclose(f);
+    SetStatus(app, "Exported %d cells to DXF (mm, top-down): %s", app->cell_count, path);
+    return true;
+}
