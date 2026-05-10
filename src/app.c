@@ -3418,10 +3418,12 @@ bool LoadProject(AppState *app, const char *path) {
 //------------------------------------------------------------------------------
 //
 // Writes a minimal AutoCAD R12 DXF with the cell footprints projected onto the
-// world XZ plane (looking down the +Y axis). One LWPOLYLINE per cell on layer
-// CELLS, one LINE per string segment on layer WIRING. Output units are
+// world XZ plane (looking down the +Y axis). One closed POLYLINE per cell on
+// layer CELLS, one LINE per string segment on layer WIRING. Output units are
 // millimeters (world coordinates × 1000) so the file imports directly into
-// CAD packages that default to mm.
+// CAD packages that default to mm. R12 (AC1009) is used for compatibility with
+// strict importers like Adobe Illustrator, which rejects LWPOLYLINE entities
+// (introduced in R14) inside an AC1009 file with error 2067.
 
 static void DXFWriteHeader(FILE *f) {
     fprintf(f, "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n0\nENDSEC\n");
@@ -3454,7 +3456,8 @@ bool ExportLayoutDXF(AppState *app, const char *path) {
     CellPreset *preset = (CellPreset *)&CELL_PRESETS[app->selected_preset];
     const float MM = 1000.0f;  // world meters → DXF millimeters
 
-    // Cells: one closed LWPOLYLINE each, projected to XZ plane
+    // Cells: one closed R12 POLYLINE each, projected to XZ plane.
+    // R12 requires the POLYLINE/VERTEX/SEQEND form; LWPOLYLINE is R14+.
     for (int i = 0; i < app->cell_count; i++) {
         SolarCell *cell = &app->cells[i];
         Vector3 worldPos = CellGetWorldPosition(app, cell);
@@ -3472,11 +3475,15 @@ bool ExportLayoutDXF(AppState *app, const char *path) {
             Vector3Add(worldPos, Vector3Add(Vector3Scale(right, -1), forward)),
         };
 
-        fprintf(f, "0\nLWPOLYLINE\n8\nCELLS\n90\n4\n70\n1\n");
+        // POLYLINE header: 66=1 "vertices follow", 70=1 closed.
+        fprintf(f, "0\nPOLYLINE\n8\nCELLS\n66\n1\n70\n1\n"
+                   "10\n0.0\n20\n0.0\n30\n0.0\n");
         for (int k = 0; k < 4; k++) {
             // DXF X = world X, DXF Y = world Z. Multiply by MM for millimeters.
-            fprintf(f, "10\n%.4f\n20\n%.4f\n", corners[k].x * MM, corners[k].z * MM);
+            fprintf(f, "0\nVERTEX\n8\nCELLS\n10\n%.4f\n20\n%.4f\n30\n0.0\n",
+                    corners[k].x * MM, corners[k].z * MM);
         }
+        fprintf(f, "0\nSEQEND\n8\nCELLS\n");
     }
 
     // String wiring: connect cells in order_in_string sequence
@@ -3492,8 +3499,8 @@ bool ExportLayoutDXF(AppState *app, const char *path) {
                     Vector3 wp = CellGetWorldPosition(app, &app->cells[c]);
                     if (have_prev) {
                         fprintf(f, "0\nLINE\n8\nWIRING\n");
-                        fprintf(f, "10\n%.4f\n20\n%.4f\n", prev.x * MM, prev.z * MM);
-                        fprintf(f, "11\n%.4f\n21\n%.4f\n", wp.x * MM, wp.z * MM);
+                        fprintf(f, "10\n%.4f\n20\n%.4f\n30\n0.0\n", prev.x * MM, prev.z * MM);
+                        fprintf(f, "11\n%.4f\n21\n%.4f\n31\n0.0\n", wp.x * MM, wp.z * MM);
                     }
                     prev = wp;
                     have_prev = true;
