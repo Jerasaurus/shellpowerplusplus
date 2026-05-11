@@ -1384,6 +1384,8 @@ void InitSnap(AppState *app) {
     app->snap.grid_rotation = 0.0f;
     app->snap.setting_grid_origin = false;
     app->snap.grid_configured = false;
+    app->snap.lock_to_centerline = false;
+    app->snap.centerline_axis = 0; // X is the car's width by default
 }
 
 Vector3 ApplyGridSnap(AppState *app, Vector3 position) {
@@ -1444,6 +1446,33 @@ Vector3 ApplyGridSnap(AppState *app, Vector3 position) {
     return snapped;
 }
 
+// Snap a candidate grid-origin point onto the car's centerline (X=0 or Z=0
+// depending on snap.centerline_axis) by zeroing the cross-axis and re-raycasting
+// straight down to recover the mesh point + normal. Returns true if the
+// projection landed on the mesh; false means the centerline doesn't cross the
+// mesh at this longitudinal position (caller can keep the raw hit).
+static bool ProjectToCenterline(AppState *app, Vector3 *point, Vector3 *normal) {
+    if (!app->snap.lock_to_centerline || !app->mesh_loaded) {
+        return false;
+    }
+    Vector3 p = *point;
+    if (app->snap.centerline_axis == 0) {
+        p.x = 0.0f;
+    } else {
+        p.z = 0.0f;
+    }
+    Ray down;
+    down.position = (Vector3){p.x, app->mesh_bounds.max.y + 1.0f, p.z};
+    down.direction = (Vector3){0, -1, 0};
+    RayCollision rc = GetRayCollisionMesh(down, app->vehicle_mesh, app->vehicle_model.transform);
+    if (!rc.hit) {
+        return false;
+    }
+    *point = rc.point;
+    *normal = rc.normal;
+    return true;
+}
+
 void DrawSnapGrid(AppState *app) {
     if (!app->mesh_loaded)
         return;
@@ -1466,6 +1495,9 @@ void DrawSnapGrid(AppState *app) {
             if (hit.hit && hit.normal.y > 0.1f) {
                 origin = hit.point;
                 normal = hit.normal;
+                // Mirror the centerline lock on the preview so the user sees
+                // exactly where the click will land.
+                ProjectToCenterline(app, &origin, &normal);
                 isPreview = true;
             } else {
                 return; // No valid hover, don't draw preview
@@ -2313,12 +2345,23 @@ void AppUpdate(AppState *app) {
             if (app->snap.setting_grid_origin) {
                 RayCollision hit = GetRayCollisionMesh(ray, app->vehicle_mesh, app->vehicle_model.transform);
                 if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && hit.hit) {
-                    // Set grid origin and normal, exit mode
-                    app->snap.grid_origin = hit.point;
-                    app->snap.grid_normal = hit.normal;
+                    Vector3 point = hit.point;
+                    Vector3 normal = hit.normal;
+                    bool snapped = ProjectToCenterline(app, &point, &normal);
+                    app->snap.grid_origin = point;
+                    app->snap.grid_normal = normal;
                     app->snap.setting_grid_origin = false;
                     app->snap.grid_configured = true;
-                    SetStatus(app, "Grid origin set at (%.2f, %.2f, %.2f)", hit.point.x, hit.point.y, hit.point.z);
+                    if (app->snap.lock_to_centerline && snapped) {
+                        SetStatus(app, "Grid origin set at (%.2f, %.2f, %.2f) [centerline]",
+                                  point.x, point.y, point.z);
+                    } else if (app->snap.lock_to_centerline) {
+                        SetStatus(app, "Grid origin set at (%.2f, %.2f, %.2f) "
+                                       "[centerline miss — used raw click]",
+                                  point.x, point.y, point.z);
+                    } else {
+                        SetStatus(app, "Grid origin set at (%.2f, %.2f, %.2f)", point.x, point.y, point.z);
+                    }
                 }
             }
             // Left click - place or remove cell

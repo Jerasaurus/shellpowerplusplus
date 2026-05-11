@@ -169,6 +169,11 @@ typedef struct {
     Vector3 grid_normal; // Normal at grid origin
     float grid_rotation; // Grid rotation degrees (0-90)
 
+    // Centerline lock: force the cross-axis of grid_origin to 0 so the grid
+    // is symmetric across the car's centerline (mesh is auto-centered at X=0/Z=0 on load).
+    bool lock_to_centerline;
+    int centerline_axis; // 0 = X is the car's width (snap X to 0), 1 = Z is the width (snap Z to 0)
+
     // Interaction state
     bool setting_grid_origin; // True when in "set origin" mode
     bool grid_configured; // True after user explicitly sets grid origin on mesh

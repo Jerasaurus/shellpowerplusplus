@@ -533,12 +533,28 @@ int DrawCellPanel(AppState *app, int x, int y, int w) {
     GuiLabel((Rectangle) {x + w - 35, y, 35, 20}, rotText);
     y += 24;
 
+    // Centerline lock: forces grid_origin's cross-axis to 0 so the grid is
+    // symmetric across the car's centerline (mesh is auto-centered at X=0/Z=0).
+    GuiCheckBox((Rectangle) {x, y, 20, 20}, "Lock to centerline", &app->snap.lock_to_centerline);
+    y += 24;
+
+    if (app->snap.lock_to_centerline) {
+        GuiLabel((Rectangle) {x, y, 70, 20}, "Width axis:");
+        GuiToggleGroup((Rectangle) {x + 75, y, 40, 20}, "X;Z", &app->snap.centerline_axis);
+        y += 24;
+    }
+
     // Set Grid Origin button
     const char *originBtnText = app->snap.setting_grid_origin ? "[Click Mesh]" : "Set Grid Origin";
     if (GuiButton((Rectangle) {x, y, w, 25}, originBtnText)) {
         app->snap.setting_grid_origin = !app->snap.setting_grid_origin;
         if (app->snap.setting_grid_origin) {
-            SetStatus(app, "Click on mesh to set grid origin");
+            if (app->snap.lock_to_centerline) {
+                SetStatus(app, "Click on mesh to set grid origin (locked to %s=0)",
+                          app->snap.centerline_axis == 0 ? "X" : "Z");
+            } else {
+                SetStatus(app, "Click on mesh to set grid origin");
+            }
         }
     }
     y += 28;
