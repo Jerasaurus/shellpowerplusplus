@@ -818,6 +818,11 @@ int DrawWiringPanel(AppState *app, int x, int y, int w) {
     }
     y += 30;
 
+    if (GuiButton((Rectangle) {x, y, w, 25}, "Undo Last Cell (Ctrl+Z)")) {
+        UndoLastCellInString(app);
+    }
+    y += 30;
+
     if (GuiButton((Rectangle) {x, y, w, 25}, "Clear All Wiring")) {
         ClearAllWiring(app);
     }

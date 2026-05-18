@@ -349,6 +349,7 @@ bool IsCellSelected(AppState *app, int cell_index);
 // Wiring
 int StartNewString(AppState *app);
 void AddCellToString(AppState *app, int cell_id);
+void UndoLastCellInString(AppState *app);
 void EndCurrentString(AppState *app);
 void CancelCurrentString(AppState *app);
 void ClearAllWiring(AppState *app);

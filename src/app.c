@@ -770,6 +770,38 @@ void AddCellToString(AppState *app, int cell_id) {
     SetStatus(app, "Added cell #%d to string #%d (%d cells)", cell_id, str->id, str->cell_count);
 }
 
+void UndoLastCellInString(AppState *app) {
+    if (app->active_string_id < 0) {
+        SetStatus(app, "Nothing to undo: no active string");
+        return;
+    }
+
+    CellString *str = NULL;
+    for (int i = 0; i < app->string_count; i++) {
+        if (app->strings[i].id == app->active_string_id) {
+            str = &app->strings[i];
+            break;
+        }
+    }
+    if (!str || str->cell_count == 0) {
+        SetStatus(app, "Nothing to undo: string is empty");
+        return;
+    }
+
+    int last_cell_id = str->cell_ids[str->cell_count - 1];
+    str->cell_count--;
+
+    for (int c = 0; c < app->cell_count; c++) {
+        if (app->cells[c].id == last_cell_id) {
+            app->cells[c].string_id = -1;
+            app->cells[c].order_in_string = -1;
+            break;
+        }
+    }
+
+    SetStatus(app, "Removed cell #%d from string #%d (%d cells)", last_cell_id, str->id, str->cell_count);
+}
+
 void EndCurrentString(AppState *app) {
     if (app->active_string_id < 0) {
         SetStatus(app, "No active string");
@@ -1498,6 +1530,8 @@ void DrawSnapGrid(AppState *app) {
                 // Mirror the centerline lock on the preview so the user sees
                 // exactly where the click will land.
                 ProjectToCenterline(app, &origin, &normal);
+                // Force horizontal preview (matches click behavior).
+                normal = (Vector3){0, 1, 0};
                 isPreview = true;
             } else {
                 return; // No valid hover, don't draw preview
@@ -2280,6 +2314,10 @@ void AppUpdate(AppState *app) {
         EndCurrentString(app);
     }
 
+    if (IsKeyPressed(KEY_Z) && IsKeyDown(KEY_LEFT_CONTROL) && app->mode == MODE_WIRING) {
+        UndoLastCellInString(app);
+    }
+
     if (IsKeyPressed(KEY_ESCAPE)) {
         if (app->mode == MODE_WIRING) {
             if (app->placing_bypass_diode) {
@@ -2349,7 +2387,9 @@ void AppUpdate(AppState *app) {
                     Vector3 normal = hit.normal;
                     bool snapped = ProjectToCenterline(app, &point, &normal);
                     app->snap.grid_origin = point;
-                    app->snap.grid_normal = normal;
+                    // Grid is always horizontal (xy-plane in Fusion / xz-plane in raylib),
+                    // not tangent to the body — tangency makes Fusion import fiddly.
+                    app->snap.grid_normal = (Vector3){0, 1, 0};
                     app->snap.setting_grid_origin = false;
                     app->snap.grid_configured = true;
                     if (app->snap.lock_to_centerline && snapped) {
