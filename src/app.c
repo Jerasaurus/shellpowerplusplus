@@ -18,6 +18,7 @@
 #include <sys/stat.h>
 #include <time.h>
 #include "raygui.h"
+#include "rlgl.h"
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -1583,6 +1584,11 @@ void DrawSnapGrid(AppState *app) {
         originColor = (Color){255, 50, 50, 255};  // Red for origin axes
     }
 
+    // Render the grid as an overlay on top of the car body so curved
+    // surfaces never clip through the flat grid plane.
+    rlDrawRenderBatchActive();
+    rlDisableDepthTest();
+
     // Draw grid lines along tangent1 direction (varying tangent2)
     for (int i = -gridExtent; i <= gridExtent; i++) {
         Vector3 offset = Vector3Scale(tangent2, i * grid);
@@ -1622,6 +1628,9 @@ void DrawSnapGrid(AppState *app) {
     // Draw small sphere marker at grid origin
     Vector3 markerPos = Vector3Add(origin, Vector3Scale(normal, 0.015f));
     DrawSphere(markerPos, 0.012f, originColor);
+
+    rlDrawRenderBatchActive();
+    rlEnableDepthTest();
 }
 
 //------------------------------------------------------------------------------
