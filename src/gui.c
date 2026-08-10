@@ -74,6 +74,39 @@ static bool g_vismode_open = false;
 static float g_sidebar_scroll_y = 0;
 static float g_sidebar_content_height = 0;
 
+// Editable float text field. `scale` converts stored value -> displayed units (e.g. 1000 for m -> mm).
+typedef struct {
+    char text[16];
+    bool edit;
+    float last;
+} FloatFieldState;
+
+static void FloatField(AppState *app, int x, int y, const char *label, FloatFieldState *fs, float *value, float scale,
+                       float minDisp, float maxDisp, const char *unit) {
+    GuiLabel((Rectangle) {x, y, 60, 20}, label);
+    float disp = *value * scale;
+    if (!fs->edit && disp != fs->last) {
+        snprintf(fs->text, sizeof(fs->text), "%g", disp);
+        fs->last = disp;
+    }
+    if (GuiTextBox((Rectangle) {x + 65, y, 60, 20}, fs->text, sizeof(fs->text), fs->edit)) {
+        fs->edit = !fs->edit;
+        if (!fs->edit) {
+            float nv = (float) atof(fs->text);
+            if (nv >= minDisp && nv <= maxDisp) {
+                *value = nv / scale;
+            }
+            snprintf(fs->text, sizeof(fs->text), "%g", *value * scale);
+            fs->last = *value * scale;
+        }
+    }
+    if (fs->edit)
+        app->gui_text_editing = true;
+    GuiLabel((Rectangle) {x + 130, y, 30, 20}, unit);
+}
+
+static FloatFieldState g_cell_w, g_cell_h, g_cell_eff, g_cell_gap;
+
 void DrawGUI(AppState *app) {
     g_vismode_dropdown_y = -1;
 
@@ -84,18 +117,23 @@ void DrawGUI(AppState *app) {
     int padding = 10;
     int w = app->sidebar_width - 2 * padding;
 
-    // Preset dropdown
+    // Preset dropdown: builtins + user presets (';' is raygui's item separator)
+    char presetList[1024]; // comfortably fits (builtins + MAX_USER_PRESETS) * MAX_PRESET_NAME
+    presetList[0] = '\0';
+    for (int i = 0; i < CELL_PRESET_COUNT + app->user_preset_count; i++) {
+        if (i > 0)
+            strncat(presetList, ";", sizeof(presetList) - strlen(presetList) - 1);
+        strncat(presetList, GetPreset(app, i)->name, sizeof(presetList) - strlen(presetList) - 1);
+    }
+
     int prev_preset = app->selected_preset;
-    if (GuiDropdownBox((Rectangle){padding, g_preset_dropdown_y, w, 25},
-                       "Maxeon Gen 3;Maxeon Gen 5;Generic Silicon",
-                       &app->selected_preset, g_preset_open)) {
+    if (GuiDropdownBox((Rectangle){padding, g_preset_dropdown_y, w, 25}, presetList, &app->selected_preset,
+                       g_preset_open)) {
         g_preset_open = !g_preset_open;
     }
-    // Update grid size when preset changes
+    // Reset editable cell spec when preset changes
     if (app->selected_preset != prev_preset) {
-        CellPreset *preset = (CellPreset *)&CELL_PRESETS[app->selected_preset];
-        float cell_size = fmaxf(preset->width, preset->height);
-        app->snap.grid_size = cell_size + 0.002f;
+        app->cell = *GetPreset(app, app->selected_preset);
     }
 
     // Vis mode dropdown (only after simulation)
@@ -113,6 +151,12 @@ void DrawGUI(AppState *app) {
 void DrawSidebar(AppState *app) {
     int sw = app->sidebar_width;
     int sh = app->screen_height - 30;
+
+    // While a dropdown is expanded (drawn later, on top), lock everything underneath
+    // so clicks on the open list can't also hit sidebar widgets. Dropdowns in edit
+    // mode ignore the lock.
+    if (g_preset_open || g_vismode_open)
+        GuiLock();
 
     // Reset text editing flag (will be set true by any active text box)
     app->gui_text_editing = false;
@@ -203,13 +247,92 @@ void DrawSidebar(AppState *app) {
     g_preset_dropdown_y = y;
     y += 30;
 
-    // Show preset info
-    CellPreset *preset = (CellPreset *) &CELL_PRESETS[app->selected_preset];
-    char presetInfo[128];
-    snprintf(presetInfo, sizeof(presetInfo), "%.0fx%.0fmm, %.1f%% eff\nVmp: %.2fV, Imp: %.2fA", preset->width * 1000,
-             preset->height * 1000, preset->efficiency * 100, preset->vmp, preset->imp);
-    GuiLabel((Rectangle) {padding, y, w, 40}, presetInfo);
-    y += 45;
+    // Editable cell spec (working copy; pick a preset to reset it)
+    FloatField(app, padding, y, "Width:", &g_cell_w, &app->cell.width, 1000.0f, 5.0f, 500.0f, "mm");
+    y += 24;
+    FloatField(app, padding, y, "Height:", &g_cell_h, &app->cell.height, 1000.0f, 5.0f, 500.0f, "mm");
+    y += 24;
+    FloatField(app, padding, y, "Effic.:", &g_cell_eff, &app->cell.efficiency, 100.0f, 1.0f, 100.0f, "%");
+    y += 24;
+
+    static bool g_show_elec = false;
+    GuiCheckBox((Rectangle) {padding, y, 20, 20}, "Electrical params...", &g_show_elec);
+    y += 24;
+
+    if (g_show_elec) {
+        static FloatFieldState g_voc, g_isc, g_vmp, g_imp, g_nid, g_rs, g_vf;
+        FloatField(app, padding, y, "Voc:", &g_voc, &app->cell.voc, 1.0f, 0.1f, 2.0f, "V");
+        y += 24;
+        FloatField(app, padding, y, "Isc:", &g_isc, &app->cell.isc, 1.0f, 0.1f, 30.0f, "A");
+        y += 24;
+        FloatField(app, padding, y, "Vmp:", &g_vmp, &app->cell.vmp, 1.0f, 0.1f, 2.0f, "V");
+        y += 24;
+        FloatField(app, padding, y, "Imp:", &g_imp, &app->cell.imp, 1.0f, 0.1f, 30.0f, "A");
+        y += 24;
+        FloatField(app, padding, y, "Ideality:", &g_nid, &app->cell.n_ideal, 1.0f, 0.8f, 2.5f, "");
+        y += 24;
+        FloatField(app, padding, y, "Rs:", &g_rs, &app->cell.series_r, 1000.0f, 0.0f, 100.0f, "mOhm");
+        y += 24;
+        FloatField(app, padding, y, "Byp Vf:", &g_vf, &app->cell.bypass_v_drop, 1.0f, 0.0f, 2.0f, "V");
+        y += 24;
+    }
+
+    char presetInfo[64];
+    snprintf(presetInfo, sizeof(presetInfo), "Pmp: %.2f W/cell", app->cell.vmp * app->cell.imp);
+    GuiLabel((Rectangle) {padding, y, w, 20}, presetInfo);
+    y += 22;
+
+    // Name + save/delete as user preset
+    GuiLabel((Rectangle) {padding, y, 60, 20}, "Name:");
+    static char g_name_text[MAX_PRESET_NAME];
+    static bool g_name_edit = false;
+    if (!g_name_edit) {
+        snprintf(g_name_text, sizeof(g_name_text), "%s", app->cell.name);
+    }
+    if (GuiTextBox((Rectangle) {padding + 45, y, w - 45, 20}, g_name_text, sizeof(g_name_text), g_name_edit)) {
+        g_name_edit = !g_name_edit;
+        if (!g_name_edit) {
+            for (char *c = g_name_text; *c; c++)
+                if (*c == ';') // ';' is the dropdown item separator
+                    *c = ' ';
+            snprintf(app->cell.name, sizeof(app->cell.name), "%s", g_name_text);
+        }
+    }
+    if (g_name_edit)
+        app->gui_text_editing = true;
+    y += 24;
+
+    int userIdx = app->selected_preset - CELL_PRESET_COUNT;
+    if (userIdx >= 0 && userIdx < app->user_preset_count) {
+        int bw2 = (w - 4) / 2;
+        if (GuiButton((Rectangle) {padding, y, bw2, 25}, "Update Preset")) {
+            app->user_presets[userIdx] = app->cell;
+            SaveUserPresets(app);
+            SetStatus(app, "Updated preset '%s'", app->cell.name);
+        }
+        if (GuiButton((Rectangle) {padding + bw2 + 4, y, bw2, 25}, "Delete")) {
+            for (int i = userIdx; i < app->user_preset_count - 1; i++) {
+                app->user_presets[i] = app->user_presets[i + 1];
+            }
+            app->user_preset_count--;
+            app->selected_preset = 0;
+            SaveUserPresets(app);
+            SetStatus(app, "Deleted preset");
+        }
+    } else {
+        if (GuiButton((Rectangle) {padding, y, w, 25}, "Save as New Preset")) {
+            if (app->user_preset_count < MAX_USER_PRESETS) {
+                app->user_presets[app->user_preset_count] = app->cell;
+                app->selected_preset = CELL_PRESET_COUNT + app->user_preset_count;
+                app->user_preset_count++;
+                SaveUserPresets(app);
+                SetStatus(app, "Saved preset '%s'", app->cell.name);
+            } else {
+                SetStatus(app, "Preset limit reached (%d)", MAX_USER_PRESETS);
+            }
+        }
+    }
+    y += 30;
 
     // Camera info
     GuiLine((Rectangle) {padding, y, w, 1}, NULL);
@@ -248,6 +371,8 @@ void DrawSidebar(AppState *app) {
         float indicatorY = scrollRatio * (sh - indicatorHeight);
         DrawRectangle(sw - 6, (int)indicatorY, 4, (int)indicatorHeight, (Color){150, 150, 150, 200});
     }
+
+    GuiUnlock(); // dropdowns drawn after the sidebar must stay interactive
 }
 
 int DrawImportPanel(AppState *app, int x, int y, int w) {
@@ -498,31 +623,8 @@ int DrawCellPanel(AppState *app, int x, int y, int w) {
     GuiCheckBox((Rectangle) {x, y, 20, 20}, "Show Grid", &app->snap.show_grid);
     y += 24;
 
-    // Grid Size text input
-    GuiLabel((Rectangle) {x, y, 60, 20}, "Grid Size:");
-    static char gridSizeText[16] = "0.125";
-    static bool gridSizeEditMode = false;
-    static float lastGridSize = 0.125f;
-
-    if (!gridSizeEditMode && app->snap.grid_size != lastGridSize) {
-        snprintf(gridSizeText, sizeof(gridSizeText), "%.3f", app->snap.grid_size);
-        lastGridSize = app->snap.grid_size;
-    }
-
-    if (GuiTextBox((Rectangle) {x + 65, y, 60, 20}, gridSizeText, 16, gridSizeEditMode)) {
-        gridSizeEditMode = !gridSizeEditMode;
-        if (!gridSizeEditMode) {
-            float newSize = atof(gridSizeText);
-            if (newSize >= 0.01f && newSize <= 1.0f) {
-                app->snap.grid_size = newSize;
-                lastGridSize = newSize;
-            } else {
-                snprintf(gridSizeText, sizeof(gridSizeText), "%.3f", app->snap.grid_size);
-            }
-        }
-    }
-    if (gridSizeEditMode) app->gui_text_editing = true;
-    GuiLabel((Rectangle) {x + 130, y, 20, 20}, "m");
+    // Gap between cells; grid pitch = cell width/height + gap
+    FloatField(app, x, y, "Cell Gap:", &g_cell_gap, &app->snap.cell_gap, 1000.0f, 0.0f, 100.0f, "mm");
     y += 24;
 
     // Rotation slider (0-90 degrees)
@@ -1099,7 +1201,7 @@ int DrawSimulationPanel(AppState *app, int x, int y, int w) {
         GuiLine((Rectangle) {x, y, w, 1}, NULL);
         y += 8;
 
-        CellPreset *preset = (CellPreset *) &CELL_PRESETS[app->selected_preset];
+        CellPreset *preset = &app->cell;
         float total_area = app->cell_count * preset->width * preset->height;
 
         // Ideal tracking with sinusoidal irradiance profile (integral of sin over half-period = 2/pi)

@@ -17,6 +17,9 @@
 #define MAX_MODULE_NAME 64
 #define MODULES_DIRECTORY "modules"
 #define MAX_BYPASS_DIODES 100
+#define MAX_USER_PRESETS 10
+#define MAX_PRESET_NAME 40
+#define USER_PRESETS_FILE "user_presets.txt"
 
 #define CELL_SURFACE_OFFSET 0.002f // Offset above mesh surface
 #define MIN_CELL_DISTANCE_FACTOR 1.05f // Slightly more than 1.0 to prevent any overlap
@@ -51,7 +54,7 @@ typedef enum {
 
 // Solar cell preset specifications
 typedef struct {
-    const char *name;
+    char name[MAX_PRESET_NAME];
     float width; // meters
     float height; // meters
     float efficiency; // 0-1
@@ -146,7 +149,6 @@ typedef struct {
     float min_height; // Minimum height for cell placement
     float max_height; // Maximum height for cell placement
     bool use_grid_layout; // Use grid-based layout instead of mesh triangles
-    float grid_spacing; // Grid spacing for layout (0 = auto based on cell size)
 } AutoLayoutSettings;
 
 // Candidate position for auto-layout
@@ -160,7 +162,7 @@ typedef struct {
 // Snap settings for cell placement
 typedef struct {
     bool grid_snap_enabled; // Snap to grid
-    float grid_size; // Grid cell size in meters
+    float cell_gap; // Gap between adjacent cells (m); grid pitch = cell width/height + gap
     bool align_to_surface; // Align cell orientation to surface
     bool show_grid; // Show grid overlay
 
@@ -228,7 +230,10 @@ typedef struct {
     SolarCell cells[MAX_CELLS];
     int cell_count;
     int next_cell_id;
-    int selected_preset; // Index into CELL_PRESETS
+    int selected_preset; // 0..CELL_PRESET_COUNT-1 = builtin, then user presets
+    CellPreset cell; // Editable working copy of the selected preset (everything tweakable)
+    CellPreset user_presets[MAX_USER_PRESETS];
+    int user_preset_count;
 
     // Strings
     CellString strings[MAX_STRINGS];
@@ -304,6 +309,11 @@ typedef struct {
 //------------------------------------------------------------------------------
 extern const CellPreset CELL_PRESETS[];
 extern const int CELL_PRESET_COUNT;
+
+// User presets (builtin presets first, user presets after; index is the combined list)
+const CellPreset *GetPreset(AppState *app, int index);
+void LoadUserPresets(AppState *app);
+void SaveUserPresets(AppState *app);
 
 //------------------------------------------------------------------------------
 // Function Declarations

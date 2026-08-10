@@ -76,9 +76,66 @@ const CellPreset CELL_PRESETS[] = {
         .n_ideal = 1.3f,
         .series_r = 0.005f,
         .bypass_v_drop = 0.7f
+    },
+    {
+        .name = "LONGi M10 Half-Cut",
+        .width = 0.182f,
+        .height = 0.091f,
+        .efficiency = 0.228f,
+        .voc = 0.69f,
+        .isc = 6.9f,
+        .vmp = 0.58f,
+        .imp = 6.5f,
+        .n_ideal = 1.2f,
+        .series_r = 0.004f,
+        .bypass_v_drop = 0.35f
     }
 };
 const int CELL_PRESET_COUNT = sizeof(CELL_PRESETS) / sizeof(CELL_PRESETS[0]);
+
+const CellPreset *GetPreset(AppState *app, int index) {
+    if (index >= 0 && index < CELL_PRESET_COUNT)
+        return &CELL_PRESETS[index];
+    if (index >= CELL_PRESET_COUNT && index < CELL_PRESET_COUNT + app->user_preset_count)
+        return &app->user_presets[index - CELL_PRESET_COUNT];
+    return &CELL_PRESETS[0];
+}
+
+// One preset per line: 10 numeric fields, then the name (may contain spaces)
+void SaveUserPresets(AppState *app) {
+    FILE *f = fopen(USER_PRESETS_FILE, "w");
+    if (!f)
+        return;
+    for (int i = 0; i < app->user_preset_count; i++) {
+        CellPreset *p = &app->user_presets[i];
+        fprintf(f, "%.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %s\n", p->width, p->height, p->efficiency,
+                p->voc, p->isc, p->vmp, p->imp, p->n_ideal, p->series_r, p->bypass_v_drop, p->name);
+    }
+    fclose(f);
+}
+
+void LoadUserPresets(AppState *app) {
+    app->user_preset_count = 0;
+    FILE *f = fopen(USER_PRESETS_FILE, "r");
+    if (!f)
+        return;
+    char line[256];
+    while (fgets(line, sizeof(line), f) && app->user_preset_count < MAX_USER_PRESETS) {
+        CellPreset p = {0};
+        int nameStart = 0;
+        if (sscanf(line, "%f %f %f %f %f %f %f %f %f %f %n", &p.width, &p.height, &p.efficiency, &p.voc, &p.isc,
+                   &p.vmp, &p.imp, &p.n_ideal, &p.series_r, &p.bypass_v_drop, &nameStart) != 10 ||
+            nameStart <= 0) {
+            continue;
+        }
+        snprintf(p.name, sizeof(p.name), "%s", line + nameStart);
+        p.name[strcspn(p.name, "\r\n")] = '\0';
+        if (p.name[0] == '\0')
+            snprintf(p.name, sizeof(p.name), "Custom %d", app->user_preset_count + 1);
+        app->user_presets[app->user_preset_count++] = p;
+    }
+    fclose(f);
+}
 
 //------------------------------------------------------------------------------
 // Utility Functions
@@ -173,6 +230,8 @@ void AppInit(AppState *app) {
     app->cell_count = 0;
     app->next_cell_id = 0;
     app->selected_preset = 0;
+    app->cell = CELL_PRESETS[0];
+    LoadUserPresets(app);
 
     // Strings
     app->string_count = 0;
@@ -445,7 +504,7 @@ int PlaceCellEx(AppState *app, Vector3 world_position, Vector3 world_normal, boo
 
     // Check for overlapping cells (in world space) - skip if check_overlap is false
     if (check_overlap) {
-        CellPreset *preset = (CellPreset *) &CELL_PRESETS[app->selected_preset];
+        CellPreset *preset = &app->cell;
         float minDist = fmaxf(preset->width, preset->height) * MIN_CELL_DISTANCE_FACTOR;
 
         for (int i = 0; i < app->cell_count; i++) {
@@ -570,7 +629,7 @@ int FindCellNearRay(AppState *app, Ray ray, float *out_distance) {
     int closest_id = -1;
     float closest_dist = 1000000.0f;
 
-    CellPreset *preset = (CellPreset *) &CELL_PRESETS[app->selected_preset];
+    CellPreset *preset = &app->cell;
     float threshold = fmaxf(preset->width, preset->height) * 0.7f;
 
     for (int i = 0; i < app->cell_count; i++) {
@@ -920,7 +979,7 @@ int AddBypassDiode(AppState *app, int start_cell_id, int end_cell_id) {
         }
     }
 
-    CellPreset *preset = (CellPreset *)&CELL_PRESETS[app->selected_preset];
+    CellPreset *preset = &app->cell;
 
     BypassDiode *diode = &app->bypass_diodes[app->bypass_diode_count];
     diode->id = app->next_bypass_diode_id++;
@@ -1066,7 +1125,7 @@ int AddCellsInRectToString(AppState *app, Vector2 screenMin, Vector2 screenMax) 
     }
 
     // Determine row spacing from cell preset
-    CellPreset *preset = (CellPreset *)&CELL_PRESETS[app->selected_preset];
+    CellPreset *preset = &app->cell;
     float rowThreshold = preset->height * 0.8f; // Cells within 0.8x cell height are same row
 
     // Set global threshold for sort comparison
@@ -1404,10 +1463,7 @@ void DeleteModule(AppState *app, int module_index) {
 //------------------------------------------------------------------------------
 void InitSnap(AppState *app) {
     app->snap.grid_snap_enabled = false;
-    // Default grid size based on cell preset with small gap (2mm)
-    CellPreset *preset = (CellPreset *)&CELL_PRESETS[app->selected_preset];
-    float cell_size = fmaxf(preset->width, preset->height);
-    app->snap.grid_size = cell_size + 0.002f; // Cell size + 2mm gap
+    app->snap.cell_gap = 0.002f; // 2mm between cells
     app->snap.align_to_surface = true;
     app->snap.show_grid = false;
 
@@ -1425,8 +1481,10 @@ Vector3 ApplyGridSnap(AppState *app, Vector3 position) {
     if (!app->snap.grid_snap_enabled)
         return position;
 
-    float grid = app->snap.grid_size;
-    if (grid <= 0)
+    // Rectangular pitch: cell footprint plus gap (cell width lies along tangent1, height along tangent2)
+    float pitchU = app->cell.width + app->snap.cell_gap;
+    float pitchV = app->cell.height + app->snap.cell_gap;
+    if (pitchU <= 0 || pitchV <= 0)
         return position;
 
     // Build local coordinate system from grid_normal
@@ -1455,9 +1513,9 @@ Vector3 ApplyGridSnap(AppState *app, Vector3 position) {
     float u = Vector3DotProduct(relPos, tangent1);
     float v = Vector3DotProduct(relPos, tangent2);
 
-    // Snap U and V to cell centers (center of grid squares, not intersections)
-    u = floorf(u / grid) * grid + grid * 0.5f;
-    v = floorf(v / grid) * grid + grid * 0.5f;
+    // Snap U and V to cell centers (center of grid rectangles, not intersections)
+    u = floorf(u / pitchU) * pitchU + pitchU * 0.5f;
+    v = floorf(v / pitchV) * pitchV + pitchV * 0.5f;
 
     // Convert back to world space
     Vector3 snapped = app->snap.grid_origin;
@@ -1510,8 +1568,9 @@ void DrawSnapGrid(AppState *app) {
     if (!app->mesh_loaded)
         return;
 
-    float grid = app->snap.grid_size;
-    if (grid <= 0)
+    float pitchU = app->cell.width + app->snap.cell_gap;
+    float pitchV = app->cell.height + app->snap.cell_gap;
+    if (pitchU <= 0 || pitchV <= 0)
         return;
 
     // Determine origin and normal - use hover position when setting grid origin
@@ -1591,9 +1650,9 @@ void DrawSnapGrid(AppState *app) {
 
     // Draw grid lines along tangent1 direction (varying tangent2)
     for (int i = -gridExtent; i <= gridExtent; i++) {
-        Vector3 offset = Vector3Scale(tangent2, i * grid);
-        Vector3 start = Vector3Add(origin, Vector3Add(offset, Vector3Scale(tangent1, -gridExtent * grid)));
-        Vector3 end = Vector3Add(origin, Vector3Add(offset, Vector3Scale(tangent1, gridExtent * grid)));
+        Vector3 offset = Vector3Scale(tangent2, i * pitchV);
+        Vector3 start = Vector3Add(origin, Vector3Add(offset, Vector3Scale(tangent1, -gridExtent * pitchU)));
+        Vector3 end = Vector3Add(origin, Vector3Add(offset, Vector3Scale(tangent1, gridExtent * pitchU)));
 
         // Lift above surface along normal direction
         start = Vector3Add(start, Vector3Scale(normal, liftHeight));
@@ -1609,9 +1668,9 @@ void DrawSnapGrid(AppState *app) {
 
     // Draw grid lines along tangent2 direction (varying tangent1)
     for (int i = -gridExtent; i <= gridExtent; i++) {
-        Vector3 offset = Vector3Scale(tangent1, i * grid);
-        Vector3 start = Vector3Add(origin, Vector3Add(offset, Vector3Scale(tangent2, -gridExtent * grid)));
-        Vector3 end = Vector3Add(origin, Vector3Add(offset, Vector3Scale(tangent2, gridExtent * grid)));
+        Vector3 offset = Vector3Scale(tangent1, i * pitchU);
+        Vector3 start = Vector3Add(origin, Vector3Add(offset, Vector3Scale(tangent2, -gridExtent * pitchV)));
+        Vector3 end = Vector3Add(origin, Vector3Add(offset, Vector3Scale(tangent2, gridExtent * pitchV)));
 
         // Lift above surface along normal direction
         start = Vector3Add(start, Vector3Scale(normal, liftHeight));
@@ -1756,7 +1815,7 @@ void RunStaticSimulation(AppState *app) {
         return;
     }
 
-    CellPreset *preset = (CellPreset *) &CELL_PRESETS[app->selected_preset];
+    CellPreset *preset = &app->cell;
 
     // Calculate sun position
     app->sim_results.sun_direction =
@@ -1988,7 +2047,7 @@ void RunTimeSimulationAnimated(AppState *app) {
         return;
     }
 
-    CellPreset *preset = (CellPreset *) &CELL_PRESETS[app->selected_preset];
+    CellPreset *preset = &app->cell;
 
     const int TIME_SAMPLES = 48;
     const int HEADING_SAMPLES = 36;
@@ -2488,7 +2547,7 @@ void AppUpdate(AppState *app) {
 }
 
 void DrawCell(AppState *app, SolarCell *cell) {
-    CellPreset *preset = (CellPreset *) &CELL_PRESETS[app->selected_preset];
+    CellPreset *preset = &app->cell;
 
     // Determine color based on visualization mode
     Color color = COLOR_CELL_UNWIRED;
@@ -2648,7 +2707,7 @@ void DrawCellSelectionHighlights(AppState *app) {
     if (app->selected_count == 0) return;
     if (app->mode != MODE_CELL_PLACEMENT) return;
 
-    CellPreset *preset = (CellPreset *)&CELL_PRESETS[app->selected_preset];
+    CellPreset *preset = &app->cell;
     Color selectColor = {255, 200, 50, 255};  // Gold/orange for selection
 
     for (int i = 0; i < app->cell_count; i++) {
@@ -2691,7 +2750,7 @@ void DrawMovePreview(AppState *app) {
     if (!hit.hit) return;
 
     Vector3 offset = Vector3Subtract(hit.point, app->move_start_pos);
-    CellPreset *preset = (CellPreset *)&CELL_PRESETS[app->selected_preset];
+    CellPreset *preset = &app->cell;
     Color ghostColor = {100, 255, 100, 80};  // Semi-transparent green
 
     for (int i = 0; i < app->cell_count; i++) {
@@ -3145,7 +3204,7 @@ void AppDraw(AppState *app) {
             Ray ray = GetMouseRay(mouse, app->cam.camera);
             RayCollision hit = GetRayCollisionMesh(ray, app->vehicle_mesh, app->vehicle_model.transform);
             if (hit.hit && hit.normal.y > 0.1f) {  // Only on upward-facing surfaces
-                CellPreset *preset = (CellPreset *)&CELL_PRESETS[app->selected_preset];
+                CellPreset *preset = &app->cell;
                 // Apply grid snap to ghost position
                 Vector3 snapPos = ApplyGridSnap(app, hit.point);
                 Vector3 pos = Vector3Add(snapPos, Vector3Scale(hit.normal, CELL_SURFACE_OFFSET));
@@ -3278,6 +3337,9 @@ bool SaveProject(AppState *app, const char *path) {
     fprintf(f, "MESH_SCALE %.9f\n", app->mesh_scale);
     fprintf(f, "MESH_ROT %.6f %.6f %.6f\n", app->mesh_rotation.x, app->mesh_rotation.y, app->mesh_rotation.z);
     fprintf(f, "PRESET %d\n", app->selected_preset);
+    fprintf(f, "CELLSPEC %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f\n", app->cell.width, app->cell.height,
+            app->cell.efficiency, app->snap.cell_gap, app->cell.voc, app->cell.isc, app->cell.vmp, app->cell.imp,
+            app->cell.n_ideal, app->cell.series_r, app->cell.bypass_v_drop);
     fprintf(f, "SIM %.6f %.6f %d %d %d %.6f %.6f\n", app->sim_settings.latitude, app->sim_settings.longitude,
             app->sim_settings.year, app->sim_settings.month, app->sim_settings.day, app->sim_settings.hour,
             app->sim_settings.irradiance);
@@ -3395,9 +3457,15 @@ bool LoadProject(AppState *app, const char *path) {
             sscanf(line + 9, "%f %f %f", &app->mesh_rotation.x, &app->mesh_rotation.y, &app->mesh_rotation.z);
         } else if (strncmp(line, "PRESET ", 7) == 0) {
             sscanf(line + 7, "%d", &app->selected_preset);
-            if (app->selected_preset < 0 || app->selected_preset >= CELL_PRESET_COUNT) {
+            if (app->selected_preset < 0 || app->selected_preset >= CELL_PRESET_COUNT + app->user_preset_count) {
                 app->selected_preset = 0;
             }
+            app->cell = *GetPreset(app, app->selected_preset);
+        } else if (strncmp(line, "CELLSPEC ", 9) == 0) {
+            // Overrides preset defaults; older files carry fewer fields (sscanf only writes what matched)
+            sscanf(line + 9, "%f %f %f %f %f %f %f %f %f %f %f", &app->cell.width, &app->cell.height,
+                   &app->cell.efficiency, &app->snap.cell_gap, &app->cell.voc, &app->cell.isc, &app->cell.vmp,
+                   &app->cell.imp, &app->cell.n_ideal, &app->cell.series_r, &app->cell.bypass_v_drop);
         } else if (strncmp(line, "SIM ", 4) == 0) {
             sscanf(line + 4, "%f %f %d %d %d %f %f", &app->sim_settings.latitude, &app->sim_settings.longitude,
                    &app->sim_settings.year, &app->sim_settings.month, &app->sim_settings.day, &app->sim_settings.hour,
@@ -3464,7 +3532,7 @@ bool LoadProject(AppState *app, const char *path) {
                 int parsed = sscanf(line, "BYPASS %d %d %d %d", &d->id, &d->string_id, &d->start_cell_id,
                                     &d->end_cell_id);
                 if (parsed != 4) { ok = false; continue; }
-                CellPreset *preset = (CellPreset *)&CELL_PRESETS[app->selected_preset];
+                CellPreset *preset = &app->cell;
                 d->voltage_drop = preset->bypass_v_drop;
                 d->is_conducting = false;
                 app->bypass_diode_count++;
@@ -3545,7 +3613,7 @@ bool ExportLayoutDXF(AppState *app, const char *path) {
 
     DXFWriteHeader(f);
 
-    CellPreset *preset = (CellPreset *)&CELL_PRESETS[app->selected_preset];
+    CellPreset *preset = &app->cell;
     const float MM = 1000.0f;  // world meters → DXF millimeters
 
     // Cells: one closed R12 POLYLINE each, projected to XZ plane.

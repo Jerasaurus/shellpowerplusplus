@@ -22,7 +22,6 @@ void InitAutoLayout(AppState *app) {
     app->auto_layout.min_height = 0.0f;
     app->auto_layout.max_height = 10.0f;
     app->auto_layout.use_grid_layout = true;
-    app->auto_layout.grid_spacing = 0.0f;
     app->auto_layout_running = false;
     app->auto_layout_progress = 0;
 }
@@ -138,7 +137,7 @@ bool IsValidSurface(AppState *app, Vector3 position, Vector3 normal) {
         }
     }
 
-    CellPreset *preset = (CellPreset *)&CELL_PRESETS[app->selected_preset];
+    CellPreset *preset = &app->cell;
     if (!IsCellFootprintValid(app, position, normal, preset->width, preset->height)) {
         return false;
     }
@@ -314,7 +313,7 @@ int RunAutoLayout(AppState *app) {
     app->auto_layout_running = true;
     app->auto_layout_progress = 0;
 
-    CellPreset *preset = (CellPreset *)&CELL_PRESETS[app->selected_preset];
+    CellPreset *preset = &app->cell;
     float cell_area = preset->width * preset->height;
     int target_cells = (int)(app->auto_layout.target_area / cell_area);
 
@@ -330,8 +329,10 @@ int RunAutoLayout(AppState *app) {
     LayoutCandidate *candidates = (LayoutCandidate *)malloc(MAX_CANDIDATES * sizeof(LayoutCandidate));
     int candidate_count = 0;
 
-    float grid_spacing = app->snap.grid_size;
-    if (grid_spacing <= 0) {
+    // Rectangular pitch: cell footprint plus gap (width along tangent1, height along tangent2)
+    float pitchU = preset->width + app->snap.cell_gap;
+    float pitchV = preset->height + app->snap.cell_gap;
+    if (pitchU <= 0 || pitchV <= 0) {
         free(candidates);
         app->auto_layout_running = false;
         app->auto_layout_progress = 0;
@@ -385,10 +386,10 @@ int RunAutoLayout(AppState *app) {
         if (v > maxV) maxV = v;
     }
 
-    int uStart = (int)floorf(minU / grid_spacing) - 1;
-    int uEnd = (int)ceilf(maxU / grid_spacing) + 1;
-    int vStart = (int)floorf(minV / grid_spacing) - 1;
-    int vEnd = (int)ceilf(maxV / grid_spacing) + 1;
+    int uStart = (int)floorf(minU / pitchU) - 1;
+    int uEnd = (int)ceilf(maxU / pitchU) + 1;
+    int vStart = (int)floorf(minV / pitchV) - 1;
+    int vEnd = (int)ceilf(maxV / pitchV) + 1;
 
     int gridU = (uEnd - uStart) + 1;
     int gridV = (vEnd - vStart) + 1;
@@ -396,8 +397,8 @@ int RunAutoLayout(AppState *app) {
 
     for (int gu = uStart; gu <= uEnd && candidate_count < MAX_CANDIDATES; gu++) {
         for (int gv = vStart; gv <= vEnd && candidate_count < MAX_CANDIDATES; gv++) {
-            float u = ((float)gu + 0.5f) * grid_spacing;
-            float v = ((float)gv + 0.5f) * grid_spacing;
+            float u = ((float)gu + 0.5f) * pitchU;
+            float v = ((float)gv + 0.5f) * pitchV;
             Vector3 gridPoint = grid_origin;
             gridPoint = Vector3Add(gridPoint, Vector3Scale(tangent1, u));
             gridPoint = Vector3Add(gridPoint, Vector3Scale(tangent2, v));
